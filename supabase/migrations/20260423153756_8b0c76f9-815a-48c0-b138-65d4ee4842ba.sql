@@ -1,0 +1,1 @@
+DROP POLICY IF EXISTS "Notif: system insert" ON public.notifications;

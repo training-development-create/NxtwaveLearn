@@ -1,0 +1,4 @@
+project_id = "itlqxrlxdrudwtnretcs"
+
+[functions.parse-quiz]
+verify_jwt = false
