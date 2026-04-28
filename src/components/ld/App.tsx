@@ -1,13 +1,10 @@
-import { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { Sidebar, Topbar, Icon } from "./ui";
+import { Sidebar, Topbar, Icon, Btn, Avatar } from "./ui";
 import { Login } from "./Login";
-import { Dashboard } from "./Dashboard";
 import { Courses } from "./Courses";
 import { Player } from "./Player";
 import { Assessment } from "./Assessment";
-import { ProgressPage } from "./Progress";
-import { AdminDashboard } from "./AdminDashboard";
 import { AdminAnalytics } from "./AdminAnalytics";
 import { AdminUpload } from "./AdminUpload";
 import { AdminModules } from "./AdminModules";
@@ -22,21 +19,52 @@ export type AppState = {
 
 export type Nav = (page: string, patch?: Partial<AppState>) => void;
 
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { err: unknown | null }> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { err: null };
+  }
+  static getDerivedStateFromError(err: unknown) {
+    return { err };
+  }
+  componentDidCatch(err: unknown) {
+    // eslint-disable-next-line no-console
+    console.error("App crashed:", err);
+  }
+  render() {
+    if (!this.state.err) return this.props.children;
+    const msg =
+      this.state.err instanceof Error
+        ? `${this.state.err.name}: ${this.state.err.message}\n${this.state.err.stack || ""}`
+        : String(this.state.err);
+    return (
+      <div style={{minHeight:'100vh', background:'#F7F9FC', padding:24}}>
+        <div style={{maxWidth:900, margin:'0 auto', background:'#fff', border:'1px solid #FCE1DE', borderRadius:12, padding:18}}>
+          <div style={{fontWeight:800, color:'#C2261D', marginBottom:8}}>Something went wrong</div>
+          <pre style={{whiteSpace:'pre-wrap', margin:0, fontSize:12, color:'#3B4A5E'}}>{msg}</pre>
+        </div>
+      </div>
+    );
+  }
+}
+
 function Inner() {
   const { user, profile, role, loading, signOut } = useAuth();
-  const [page, setPage] = useState<string>('dashboard');
+  const [page, setPage] = useState<string>('courses');
   const [state, setState] = useState<AppState>({});
 
   useEffect(() => {
-    if (role === 'admin') setPage(p => (p.startsWith('admin-') ? p : 'admin-dashboard'));
-    else if (role === 'learner') setPage(p => (p.startsWith('admin-') ? 'dashboard' : p));
+    if (role === 'admin') setPage(p => (p.startsWith('admin-') ? p : 'admin-analytics'));
+    else if (role === 'learner') setPage(() => 'courses');
   }, [role]);
 
   const nav: Nav = useCallback((p, s) => {
+    // Prevent admin sessions from navigating to learner-only pages.
+    if (role === 'admin' && !p.startsWith('admin-')) p = 'admin-analytics';
     setPage(p);
     if (s) setState(prev => ({ ...prev, ...s }));
     if (typeof window !== 'undefined') window.scrollTo(0, 0);
-  }, []);
+  }, [role]);
 
   if (loading) {
     return <div style={{minHeight:'100vh', display:'grid', placeItems:'center', background:'#F7F9FC', color:'#5B6A7D'}}>Loading…</div>;
@@ -47,34 +75,65 @@ function Inner() {
   }
 
   const learnerPages: Record<string, React.ReactNode> = {
-    dashboard: <Dashboard onNav={nav}/>,
     courses: <Courses onNav={nav} initialQuery={state.search}/>,
     player: <Player onNav={nav} state={state} setState={setState}/>,
     assessment: <Assessment onNav={nav} state={state} setState={setState}/>,
-    progress: <ProgressPage/>,
   };
   const adminPages: Record<string, React.ReactNode> = {
-    'admin-dashboard': <AdminDashboard onNav={nav}/>,
     'admin-analytics': <AdminAnalytics/>,
     'admin-modules': <AdminModules onNav={nav}/>,
     'admin-upload': <AdminUpload onNav={nav}/>,
     'admin-admins': <AdminAdmins/>,
   };
-  const current = role === 'admin' ? adminPages[page] : learnerPages[page];
+  const current =
+    role === 'admin'
+      ? (adminPages[page] ?? adminPages['admin-analytics'])
+      : (learnerPages[page] ?? learnerPages.courses);
 
   const titles: Record<string, [string, string]> = {
-    dashboard: ['Home', 'Your assigned training and progress'],
     courses: ['My courses', 'All courses available to you'],
     player: ['Now playing', 'Watch the full video to unlock the quiz'],
     assessment: ['Assessment', 'Answer all questions to continue'],
-    progress: ['My progress', 'Completion history'],
-    'admin-dashboard': ['Overview', 'Platform health at a glance'],
-    'admin-analytics': ['Analytics', 'Watch duration and engagement per learner'],
+    'admin-analytics': ['Analytics', 'Video watch & assessment activity'],
     'admin-modules': ['Modules', 'Manage all courses & videos'],
     'admin-upload': ['Upload & Quiz', 'Add a new training video and AI-parsed assessment'],
     'admin-admins': ['Admins', 'Promote learners to admin'],
   };
-  const [t, s] = titles[page] || ['', ''];
+  const fallbackTitleKey =
+    role === 'admin'
+      ? (titles[page] ? page : 'admin-analytics')
+      : (titles[page] ? page : 'courses');
+  const [t, s] = titles[fallbackTitleKey] || ['', ''];
+
+  if (role === 'learner') {
+    return (
+      <div style={{minHeight:'100vh', background:'#F7F9FC'}}>
+        <header style={{position:'sticky', top:0, zIndex:5, background:'#fff', borderBottom:'1px solid #EEF2F7'}}>
+          <div style={{width:'100%', padding:'14px 24px', display:'flex', alignItems:'center', gap:12}}>
+            <img src="/assets/nxtwave-colored.svg" style={{height:22}} alt="NxtWave"/>
+            <div style={{marginLeft:'auto', display:'flex', alignItems:'center', gap:12}}>
+              <div style={{textAlign:'right', minWidth:0, maxWidth:280}}>
+                <div title={profile.full_name || profile.email} style={{fontSize:13, fontWeight:700, color:'#0A1F3D', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>
+                  {profile.full_name || profile.email}
+                </div>
+                <div style={{fontSize:11, color:'#5B6A7D', display:'flex', gap:8, justifyContent:'flex-end', alignItems:'center'}}>
+                  <span title={profile.email} style={{overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:200}}>{profile.email}</span>
+                  {profile.employee_id && (
+                    <code style={{fontSize:10, background:'#F2F9FF', padding:'2px 6px', borderRadius:4, color:'#0072FF', fontWeight:700}}>{profile.employee_id}</code>
+                  )}
+                </div>
+              </div>
+              <Avatar src={profile.avatar_url} name={profile.full_name || profile.email} size={34}/>
+              <Btn variant="ghost" size="sm" onClick={async ()=>{ await signOut(); }}>Sign out</Btn>
+            </div>
+          </div>
+        </header>
+        <div style={{width:'100%', padding:'0 24px'}}>
+          <ErrorBoundary>{current}</ErrorBoundary>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{display:'flex', minHeight:'100vh', background:'#F7F9FC'}}>
@@ -89,14 +148,9 @@ function Inner() {
       />
       <main style={{flex:1, background:'#F7F9FC', minWidth:0}}>
         <Topbar title={t} subtitle={s} profile={profile}>
-          {page === 'dashboard' && (
-            <form onSubmit={(e) => { e.preventDefault(); const fd = new FormData(e.currentTarget); const q = String(fd.get('q') || '').trim(); nav('courses', { search: q }); }} style={{position:'relative'}}>
-              <input name="q" placeholder="Search courses…" style={{padding:'10px 14px 10px 38px', border:'1px solid #DDE4ED', borderRadius:10, fontSize:13, width:320, outline:'none', background:'#F7F9FC'}}/>
-              <div style={{position:'absolute', left:12, top:12, color:'#8A97A8', pointerEvents:'none'}}><Icon d="M21 21l-4.35-4.35M17 10a7 7 0 11-14 0 7 7 0 0114 0z" size={14}/></div>
-            </form>
-          )}
+          {null}
         </Topbar>
-        {current}
+        <ErrorBoundary>{current}</ErrorBoundary>
       </main>
     </div>
   );

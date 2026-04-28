@@ -16,14 +16,17 @@ export function AdminDashboard({ onNav }: { onNav: Nav }) {
 
   const load = async () => {
     const [{ data: profiles }, { data: enrolls }, { data: prog }, { data: lessons }, { data: attempts }] = await Promise.all([
-      supabase.from('profiles').select('id, full_name, email, avatar_url'),
+      supabase.from('employees').select('id, auth_user_id, name, email').not('auth_user_id', 'is', null),
       supabase.from('enrollments').select('user_id, course_id'),
       supabase.from('lesson_progress').select('user_id, lesson_id, watched_seconds, completed, updated_at'),
       supabase.from('lessons').select('id, course_id, duration_seconds'),
       supabase.from('quiz_attempts').select('user_id, lesson_id, score, total, passed, created_at'),
     ]);
 
-    setActiveLearners((profiles || []).length);
+    // employees rows with a non-null auth_user_id == people who have actually logged in.
+    type EmpRow = { id: string; auth_user_id: string; name: string; email: string };
+    const empRows = (empRows as EmpRow[]).map(e => ({ id: e.auth_user_id, full_name: e.name, email: e.email }));
+    setActiveLearners(empRows.length);
     const totalAttemptsCount = (attempts || []).length;
     setTotalAttempts(totalAttemptsCount);
     const sumPct = (attempts || []).reduce((s: number, a: { score: number; total: number }) => s + (a.total ? (a.score/a.total)*100 : 0), 0);
@@ -64,7 +67,7 @@ export function AdminDashboard({ onNav }: { onNav: Nav }) {
       if (!lastByUser.has(p.user_id) || p.updated_at > lastByUser.get(p.user_id)!) lastByUser.set(p.user_id, p.updated_at);
     });
     const completionByUser = new Map<string, number>();
-    (profiles || []).forEach((u: { id: string }) => {
+    empRows.forEach((u) => {
       const userEnrolls = (enrolls || []).filter((e: { user_id: string }) => e.user_id === u.id);
       let t = 0, d = 0;
       userEnrolls.forEach((e: { course_id: string }) => {
@@ -82,7 +85,7 @@ export function AdminDashboard({ onNav }: { onNav: Nav }) {
       scoreByUser.set(a.user_id, v);
     });
 
-    const ls: Learner[] = (profiles || []).map((u: { id: string; full_name: string; email: string }) => {
+    const ls: Learner[] = empRows.map((u) => {
       const c = completionByUser.get(u.id) || 0;
       const s = scoreByUser.get(u.id);
       const score = s && s.n ? Math.round(s.sum/s.n) : 0;

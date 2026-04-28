@@ -3,12 +3,9 @@ import type { Profile } from "./auth";
 import { NotificationBell } from "./NotificationBell";
 
 export const NAV_LEARNER = [
-  { id:'dashboard', label:'Home', icon:'M3 12l9-8 9 8v8a2 2 0 01-2 2h-4v-6h-6v6H5a2 2 0 01-2-2v-8z' },
   { id:'courses', label:'My courses', icon:'M4 5a2 2 0 012-2h3l2 2h9a2 2 0 012 2v11a2 2 0 01-2 2H4V5z' },
-  { id:'progress', label:'My progress', icon:'M3 3v18h18M7 16l4-4 3 3 5-7' },
 ];
 export const NAV_ADMIN = [
-  { id:'admin-dashboard', label:'Overview', icon:'M3 12l9-8 9 8v8a2 2 0 01-2 2h-4v-6h-6v6H5a2 2 0 01-2-2v-8z' },
   { id:'admin-analytics', label:'Analytics', icon:'M3 3v18h18M7 14l3-3 3 3 5-6' },
   { id:'admin-modules', label:'Modules', icon:'M4 6h16M4 12h16M4 18h10' },
   { id:'admin-upload', label:'Upload & Quiz', icon:'M4 16v3a2 2 0 002 2h12a2 2 0 002-2v-3M12 4v13M6 10l6-6 6 6' },
@@ -39,8 +36,11 @@ export function Sidebar({ role, active, onNav, profile }: { role:'learner'|'admi
       <div style={sb.userBlock}>
         <Avatar src={profile.avatar_url} name={profile.full_name || profile.email} size={32}/>
         <div style={{minWidth:0, flex:1}}>
-          <div style={{fontSize:13, fontWeight:700, color:'#0A1F3D', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{profile.full_name || profile.email}</div>
-          <div style={{fontSize:11, color:'#5B6A7D'}}>{role==='admin'?'L&D Admin':'Learner'}</div>
+          <div title={profile.full_name || profile.email} style={{fontSize:13, fontWeight:700, color:'#0A1F3D', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{profile.full_name || profile.email}</div>
+          <div title={profile.email} style={{fontSize:11, color:'#5B6A7D', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{profile.email}</div>
+          {profile.employee_id && (
+            <div style={{fontSize:10, color:'#0072FF', fontWeight:700, fontFamily:'monospace', marginTop:2}}>ID: {profile.employee_id}</div>
+          )}
         </div>
       </div>
       <button onClick={()=>onNav('logout')} style={{margin:'0 14px 18px', padding:'9px 12px', background:'#fff', border:'1px solid #EEF2F7', borderRadius:10, color:'#5B6A7D', fontSize:13, fontWeight:600, cursor:'pointer'}}>Sign out</button>
@@ -68,9 +68,20 @@ export function Topbar({ title, subtitle, children, profile }: { title:string; s
         {children}
         <NotificationBell/>
         {profile && (
-          <div style={{ position:'relative' }}>
-            <Avatar src={profile.avatar_url} name={profile.full_name || profile.email} size={38}/>
-            <span style={{ position:'absolute', right:-1, bottom:-1, width:11, height:11, borderRadius:99, background:'#17A674', border:'2px solid #fff' }}/>
+          <div style={{display:'flex', alignItems:'center', gap:10}}>
+            <div style={{textAlign:'right', minWidth:0, maxWidth:240}}>
+              <div title={profile.full_name || profile.email} style={{fontSize:13, fontWeight:700, color:'#0A1F3D', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{profile.full_name || profile.email}</div>
+              <div style={{fontSize:11, color:'#5B6A7D', display:'flex', gap:8, justifyContent:'flex-end', alignItems:'center'}}>
+                <span title={profile.email} style={{overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:160}}>{profile.email}</span>
+                {profile.employee_id && (
+                  <code style={{fontSize:10, background:'#F2F9FF', padding:'2px 6px', borderRadius:4, color:'#0072FF', fontWeight:700}}>{profile.employee_id}</code>
+                )}
+              </div>
+            </div>
+            <div style={{ position:'relative' }}>
+              <Avatar src={profile.avatar_url} name={profile.full_name || profile.email} size={38}/>
+              <span style={{ position:'absolute', right:-1, bottom:-1, width:11, height:11, borderRadius:99, background:'#17A674', border:'2px solid #fff' }}/>
+            </div>
           </div>
         )}
       </div>

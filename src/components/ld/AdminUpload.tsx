@@ -45,6 +45,165 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // ----- Assignment picker state -----
+  type Dept = { id: string; name: string };
+  type SubDept = { id: string; name: string; department_id: string };
+  type EmpOpt = { id: string; name: string; email: string; department_id: string | null; sub_department_id: string | null; manager_id: string | null; is_manager: boolean };
+  const [assignAll, setAssignAll] = useState(true);
+  const [assignDeptIds, setAssignDeptIds] = useState<string[]>([]);
+  const [assignSubDeptIds, setAssignSubDeptIds] = useState<string[]>([]);
+  const [assignManagerIds, setAssignManagerIds] = useState<string[]>([]);
+  const [assignEmployeeIds, setAssignEmployeeIds] = useState<string[]>([]);
+  const [departments, setDepartments] = useState<Dept[]>([]);
+  const [subDepartments, setSubDepartments] = useState<SubDept[]>([]);
+  const [employeesAll, setEmployeesAll] = useState<EmpOpt[]>([]);
+
+  useEffect(() => {
+    (async () => {
+      // Supabase JS caps single queries at 1000 rows by default. With 3000+
+      // employees that hides 2/3 of the org from the picker (the symptom you
+      // hit: manager appeared to have 14 reports when DB had 16). Page through
+      // 1000-row chunks until we've fetched everything.
+      type Row = Omit<EmpOpt, 'is_manager'>;
+      const fetchAllEmployees = async (): Promise<Row[]> => {
+        const all: Row[] = [];
+        const page = 1000;
+        for (let from = 0; ; from += page) {
+          const { data, error } = await supabase
+            .from('employees')
+            .select('id, name, email, department_id, sub_department_id, manager_id, status')
+            .eq('status', 'active')
+            .order('name', { ascending: true })
+            .range(from, from + page - 1);
+          if (error) { console.warn('[AdminUpload] employee paging stopped:', error.message); break; }
+          if (!data || data.length === 0) break;
+          all.push(...(data as Row[]));
+          if (data.length < page) break;
+        }
+        return all;
+      };
+
+      const [{ data: d }, { data: s }, allEmployees] = await Promise.all([
+        supabase.from('departments').select('id, name').order('name').range(0, 9999),
+        supabase.from('sub_departments').select('id, name, department_id').order('name').range(0, 9999),
+        fetchAllEmployees(),
+      ]);
+      setDepartments((d || []) as Dept[]);
+      setSubDepartments((s || []) as SubDept[]);
+      // A "manager" is anyone in the active set who has at least one direct
+      // report — derived from the same paged list so we never miss reports.
+      const reportCounts = new Map<string, number>();
+      allEmployees.forEach((row) => {
+        if (!row.manager_id) return;
+        reportCounts.set(row.manager_id, (reportCounts.get(row.manager_id) ?? 0) + 1);
+      });
+      setEmployeesAll(allEmployees.map(emp => ({
+        ...emp,
+        is_manager: (reportCounts.get(emp.id) ?? 0) > 0,
+      })));
+    })();
+  }, []);
+
+  const filteredSubDepts = subDepartments.filter(s => assignDeptIds.length === 0 || assignDeptIds.includes(s.department_id));
+
+  // Managers: filter by where THEIR REPORTS work, not by the manager's own
+  // department. Picking "HR" should show every manager who has at least one
+  // report in HR — even if that manager themselves sits in another dept.
+  // This was the bug behind "filters mismatching with managers".
+  const managerOptions = (() => {
+    const deptSet = new Set(assignDeptIds);
+    const subDeptSet = new Set(assignSubDeptIds);
+    const noTreeFilter = deptSet.size === 0 && subDeptSet.size === 0;
+    // Build manager_id -> [reports] index from the employees set.
+    const reportsByManager = new Map<string, EmpOpt[]>();
+    employeesAll.forEach(e => {
+      if (!e.manager_id) return;
+      const arr = reportsByManager.get(e.manager_id) ?? [];
+      arr.push(e);
+      reportsByManager.set(e.manager_id, arr);
+    });
+    return employeesAll.filter(m => {
+      if (!m.is_manager) return false;
+      if (noTreeFilter) return true;
+      const reports = reportsByManager.get(m.id) ?? [];
+      // Show this manager if AT LEAST one of their reports matches BOTH
+      // selected dept AND selected sub-dept (intersection on each report).
+      return reports.some(r => {
+        if (deptSet.size && (!r.department_id || !deptSet.has(r.department_id))) return false;
+        if (subDeptSet.size && (!r.sub_department_id || !subDeptSet.has(r.sub_department_id))) return false;
+        return true;
+      });
+    });
+  })();
+
+  // Specific-employees list: each row must satisfy ALL active filters.
+  // - dept / sub-dept narrow by the EMPLOYEE's own placement (correct here)
+  // - manager filter narrows to that manager's reports (regardless of dept)
+  const employeeOptions = employeesAll.filter(e => {
+    if (assignDeptIds.length && (!e.department_id || !assignDeptIds.includes(e.department_id))) return false;
+    if (assignSubDeptIds.length && (!e.sub_department_id || !assignSubDeptIds.includes(e.sub_department_id))) return false;
+    if (assignManagerIds.length && (!e.manager_id || !assignManagerIds.includes(e.manager_id))) return false;
+    return true;
+  });
+  useEffect(() => {
+    const allowedSubIds = new Set(filteredSubDepts.map(s => s.id));
+    setAssignSubDeptIds(prev => {
+      const next = prev.filter(id => allowedSubIds.has(id));
+      return next.length === prev.length && next.every((v, i) => v === prev[i]) ? prev : next;
+    });
+  }, [assignDeptIds, filteredSubDepts]);
+  useEffect(() => {
+    const allowedManagerIds = new Set(managerOptions.map(m => m.id));
+    setAssignManagerIds(prev => {
+      const next = prev.filter(id => allowedManagerIds.has(id));
+      return next.length === prev.length && next.every((v, i) => v === prev[i]) ? prev : next;
+    });
+  }, [assignDeptIds, assignSubDeptIds, managerOptions]);
+  useEffect(() => {
+    const allowedEmployeeIds = new Set(employeeOptions.map(e => e.id));
+    setAssignEmployeeIds(prev => {
+      const next = prev.filter(id => allowedEmployeeIds.has(id));
+      return next.length === prev.length && next.every((v, i) => v === prev[i]) ? prev : next;
+    });
+  }, [assignDeptIds, assignSubDeptIds, assignManagerIds, employeeOptions]);
+  const toggle = (arr: string[], setArr: (v: string[]) => void, id: string) => {
+    setArr(arr.includes(id) ? arr.filter(x => x !== id) : [...arr, id]);
+  };
+  const assignmentValid = assignAll
+    || assignDeptIds.length > 0
+    || assignSubDeptIds.length > 0
+    || assignManagerIds.length > 0
+    || assignEmployeeIds.length > 0;
+
+  // Resolve the assignment into the actual employee set using INTERSECTION
+  // semantics for the org-tree filters: each more-specific level NARROWS the
+  // previous. So picking "HR + HRBP sub-dept" gives only HRBP people, not
+  // all of HR. Specific-employee picks are additive (union) on top of that.
+  //
+  // This matches what the user expects from a cascading filter UI and
+  // prevents the "I picked HRBP but everyone in HR got assigned" bug.
+  const resolvedEmployeeIds: Set<string> = (() => {
+    const out = new Set<string>();
+    if (!assignmentValid) return out;
+    if (assignAll) {
+      employeesAll.forEach(e => out.add(e.id));
+      return out;
+    }
+    const usingTreeFilter = assignDeptIds.length > 0 || assignSubDeptIds.length > 0 || assignManagerIds.length > 0;
+    if (usingTreeFilter) {
+      employeesAll.forEach(e => {
+        if (assignDeptIds.length > 0    && (!e.department_id     || !assignDeptIds.includes(e.department_id)))     return;
+        if (assignSubDeptIds.length > 0 && (!e.sub_department_id || !assignSubDeptIds.includes(e.sub_department_id))) return;
+        if (assignManagerIds.length > 0 && (!e.manager_id        || !assignManagerIds.includes(e.manager_id)))     return;
+        out.add(e.id);
+      });
+    }
+    // Specific employees are additive — admin can include extras outside the tree filter.
+    assignEmployeeIds.forEach(id => out.add(id));
+    return out;
+  })();
+  const previewEmployeeCount = resolvedEmployeeIds.size;
+
   useEffect(() => {
     supabase.from('courses').select('id, title').order('created_at', { ascending: true }).then(({ data }) => setExistingCourses(data || []));
   }, []);
@@ -156,12 +315,72 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
         const { error: e3 } = await supabase.from('mcq_questions').insert(rows);
         if (e3) throw e3;
       }
-      // If existing course, also push a notification (publish trigger only fires on new course)
+
+      // ----- Write course_assignments for the picker selections.
+      // For new courses, we always write fresh rows. For existing courses we
+      // additionally clear prior assignments so the admin can re-target.
+      if (mode === 'new' || (mode === 'existing' && assignmentValid)) {
+        if (mode === 'existing') {
+          await supabase.from('course_assignments').delete().eq('course_id', courseId);
+        }
+        const rows: Record<string, unknown>[] = [];
+        if (assignAll) {
+          rows.push({ course_id: courseId, scope_all: true });
+        } else {
+          // ---- Intersection-based assignment ----
+          // INTENT: each more-specific level narrows. Pick HR + HRBP →
+          // only HRBP people get assigned, not all of HR.
+          //
+          // The DB's assigned_employees() function OR-combines rows. So to
+          // express intersection we have two strategies:
+          //
+          //   1. SINGLE LEVEL picked (e.g. only depts, or only managers) →
+          //      write rows for that level. The DB resolver expands them at
+          //      query time, which preserves auto-enrollment for new joiners.
+          //
+          //   2. MULTIPLE LEVELS picked (e.g. dept + sub-dept, or sub-dept +
+          //      manager) → resolve the intersection in the client and write
+          //      ONE employee_id row per resolved person. This is a snapshot:
+          //      new joiners matching the same scope won't auto-enroll. The
+          //      preview count under the picker tells the admin exactly what
+          //      they're committing to.
+          const usingDept = assignDeptIds.length > 0;
+          const usingSub = assignSubDeptIds.length > 0;
+          const usingMgr = assignManagerIds.length > 0;
+          const usingEmp = assignEmployeeIds.length > 0;
+          const treeLevels = (usingDept ? 1 : 0) + (usingSub ? 1 : 0) + (usingMgr ? 1 : 0);
+
+          if (treeLevels === 0 && usingEmp) {
+            assignEmployeeIds.forEach(id => rows.push({ course_id: courseId, employee_id: id }));
+          } else if (treeLevels === 1 && !usingEmp) {
+            if (usingDept) assignDeptIds.forEach(id => rows.push({ course_id: courseId, department_id: id }));
+            else if (usingSub) assignSubDeptIds.forEach(id => rows.push({ course_id: courseId, sub_department_id: id }));
+            else if (usingMgr) assignManagerIds.forEach(id => rows.push({ course_id: courseId, manager_id: id }));
+          } else {
+            // Mixed scope → snapshot the intersection.
+            resolvedEmployeeIds.forEach(id => rows.push({ course_id: courseId, employee_id: id }));
+          }
+        }
+        if (rows.length) {
+          const { error: e4 } = await supabase.from('course_assignments').insert(rows);
+          if (e4) throw e4;
+        }
+
+        // Ensure enrollments are refreshed immediately even if DB triggers
+        // were not applied on this project (safe no-op if function missing).
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          await (supabase as any).rpc?.('refresh_enrollments_for_course', { _course_id: courseId });
+        } catch {
+          // ignore – DB function may not exist on legacy schema
+        }
+      }
+      // If existing course, also push a notification (publish trigger only fires on new course).
       if (mode === 'existing') {
-        const { data: ps } = await supabase.from('profiles').select('id');
+        const { data: ps } = await supabase.from('employees').select('auth_user_id').not('auth_user_id', 'is', null);
         if (ps && ps.length) {
-          await supabase.from('notifications').insert(ps.map((p: { id: string }) => ({
-            user_id: p.id, title: 'New lesson added', body: `${lessonTitle.trim()} — open course to watch`, link_course_id: courseId,
+          await supabase.from('notifications').insert(ps.map((p: { auth_user_id: string }) => ({
+            user_id: p.auth_user_id, title: 'New lesson added', body: `${lessonTitle.trim()} — open course to watch`, link_course_id: courseId,
           })));
         }
       }
@@ -169,7 +388,12 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
       setSaving(false);
       onNav('admin-dashboard');
     } catch (err) {
-      setError((err as Error).message);
+      const msg = (err as Error).message || '';
+      if (msg.includes('row-level security policy for table "courses"')) {
+        setError('You are not passing admin DB policy. Please apply the admin-role compatibility SQL patch, then retry publish.');
+      } else {
+        setError(msg);
+      }
       setSaving(false);
     }
   };
@@ -335,6 +559,37 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
                 <div style={{fontSize:14, color:'#5B6A7D', marginTop:4}}>Auto-assigned to every employee. They'll get a notification.</div>
               </div>
               <div style={{padding:24}}>
+                <div style={{marginBottom:18, padding:16, border:'1px solid #EEF2F7', borderRadius:12, background:'#FAFBFD'}}>
+                  <div style={{display:'flex', alignItems:'center', marginBottom:12}}>
+                    <div>
+                      <div className="eyebrow">ASSIGN COURSE TO</div>
+                      <div style={{fontSize:14, fontWeight:700, color:'#0A1F3D', marginTop:2}}>Pick who can see and complete this course</div>
+                    </div>
+                    <label style={{marginLeft:'auto', display:'flex', alignItems:'center', gap:8, cursor:'pointer', padding:'8px 12px', background: assignAll?'#E6F4FF':'#fff', borderRadius:8, border:`1.5px solid ${assignAll?'#0072FF':'#DDE4ED'}`}}>
+                      <input type="checkbox" checked={assignAll} onChange={e=>setAssignAll(e.target.checked)}/>
+                      <span style={{fontSize:13, fontWeight:700, color: assignAll?'#0072FF':'#3B4A5E'}}>All employees</span>
+                    </label>
+                  </div>
+                  {!assignAll && (
+                    <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:12}}>
+                      <PickerGroup label={`Departments (${assignDeptIds.length})`} options={departments.map(d => ({ id: d.id, label: d.name }))} selected={assignDeptIds} onToggle={(id)=>toggle(assignDeptIds, setAssignDeptIds, id)} onSetAll={setAssignDeptIds} searchable/>
+                      <PickerGroup label={`Sub-departments (${assignSubDeptIds.length})`} options={filteredSubDepts.map(s => ({ id: s.id, label: s.name }))} selected={assignSubDeptIds} onToggle={(id)=>toggle(assignSubDeptIds, setAssignSubDeptIds, id)} onSetAll={setAssignSubDeptIds} searchable/>
+                      <PickerGroup label={`Managers (${assignManagerIds.length})`} options={managerOptions.map(m => ({ id: m.id, label: m.name || m.email }))} selected={assignManagerIds} onToggle={(id)=>toggle(assignManagerIds, setAssignManagerIds, id)} onSetAll={setAssignManagerIds} searchable/>
+                      <PickerGroup label={`Specific employees (${assignEmployeeIds.length})`} options={employeeOptions.map(emp => ({ id: emp.id, label: emp.name || emp.email }))} selected={assignEmployeeIds} onToggle={(id)=>toggle(assignEmployeeIds, setAssignEmployeeIds, id)} onSetAll={setAssignEmployeeIds} searchable/>
+                    </div>
+                  )}
+                  {!assignmentValid && (
+                    <div style={{marginTop:10, fontSize:12, color:'#C2261D', fontWeight:600}}>Pick at least one assignment scope.</div>
+                  )}
+                  {assignmentValid && (
+                    <div style={{marginTop:10, padding:'8px 12px', background: previewEmployeeCount > 500 ? '#FFF6E6' : '#E8F7EF', border:`1px solid ${previewEmployeeCount > 500 ? '#FCD79B' : '#C5EBD7'}`, borderRadius:8, fontSize:12, color: previewEmployeeCount > 500 ? '#9A6708' : '#0F7C57', fontWeight:600, display:'flex', alignItems:'center', gap:8}}>
+                      <span>{previewEmployeeCount > 500 ? '⚠️' : '✅'}</span>
+                      <span>This will assign the course to <strong>{previewEmployeeCount.toLocaleString()}</strong> employee{previewEmployeeCount === 1 ? '' : 's'}.</span>
+                      {previewEmployeeCount > 500 && <span style={{marginLeft:'auto', fontSize:11, fontWeight:500}}>Double-check the scope before publishing.</span>}
+                    </div>
+                  )}
+                </div>
+
                 <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:18}}>
                   <Summary label="Course" value={mode==='new' ? courseTitle : (existingCourses.find(c=>c.id===existingCourseId)?.title || '—')}/>
                   <Summary label="Video" value={lessonTitle}/>
@@ -352,7 +607,7 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
                 {error && <div style={{padding:'10px 12px', background:'#FCE1DE', color:'#C2261D', borderRadius:8, fontSize:13, fontWeight:500, marginBottom:14}}>{error}</div>}
                 <div style={{display:'flex', gap:10}}>
                   <Btn variant="ghost" onClick={()=>setStep(3)}>← Back</Btn>
-                  <Btn variant="success" size="lg" onClick={publish} disabled={saving}>{saving ? 'Publishing…' : 'Publish ✓'}</Btn>
+                  <Btn variant="success" size="lg" onClick={publish} disabled={saving || !assignmentValid}>{saving ? 'Publishing…' : 'Publish ✓'}</Btn>
                 </div>
               </div>
             </Card>
@@ -377,6 +632,44 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
             </div>
           </Card>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function PickerGroup({ label, options, selected, onToggle, onSetAll, searchable }: { label: string; options: { id: string; label: string }[]; selected: string[]; onToggle: (id: string) => void; onSetAll: (ids: string[]) => void; searchable?: boolean }) {
+  const [q, setQ] = useState('');
+  const filtered = q ? options.filter(o => o.label.toLowerCase().includes(q.toLowerCase())) : options;
+  const filteredIds = filtered.map(f => f.id);
+  const selectedInFiltered = filteredIds.filter(id => selected.includes(id));
+  const allFilteredSelected = filteredIds.length > 0 && selectedInFiltered.length === filteredIds.length;
+  const toggleSelectAllFiltered = () => {
+    if (allFilteredSelected) {
+      onSetAll(selected.filter(id => !filteredIds.includes(id)));
+      return;
+    }
+    onSetAll(Array.from(new Set([...selected, ...filteredIds])));
+  };
+  return (
+    <div style={{border:'1px solid #EEF2F7', borderRadius:10, background:'#fff', overflow:'hidden'}}>
+      <div style={{padding:'10px 12px', borderBottom:'1px solid #EEF2F7', fontSize:12, fontWeight:700, color:'#3B4A5E', display:'flex', alignItems:'center', gap:8}}>
+        <span>{label}</span>
+        <button type="button" onClick={toggleSelectAllFiltered} style={{marginLeft:'auto', padding:'4px 8px', border:'1px solid #DDE4ED', borderRadius:6, background:'#fff', cursor:'pointer', fontSize:11, fontWeight:700, color:'#3B4A5E'}}>
+          {allFilteredSelected ? 'Clear all' : 'Select all'}
+        </button>
+        {searchable && (
+          <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search…" style={{padding:'4px 8px', border:'1px solid #DDE4ED', borderRadius:6, fontSize:11, width:120, outline:'none'}}/>
+        )}
+      </div>
+      <div style={{maxHeight:160, overflowY:'auto', padding:'4px 8px'}}>
+        {filtered.length === 0 ? (
+          <div style={{padding:'10px 4px', fontSize:11, color:'#8A97A8'}}>No options.</div>
+        ) : filtered.map(opt => (
+          <label key={opt.id} style={{display:'flex', alignItems:'center', gap:8, padding:'6px 4px', cursor:'pointer', fontSize:12, color:'#3B4A5E', borderRadius:4}}>
+            <input type="checkbox" checked={selected.includes(opt.id)} onChange={()=>onToggle(opt.id)}/>
+            <span>{opt.label}</span>
+          </label>
+        ))}
       </div>
     </div>
   );

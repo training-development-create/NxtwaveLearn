@@ -18,7 +18,6 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
   const [stage, setStage] = useState<'intro'|'quiz'|'result'>('intro');
   const [idx, setIdx] = useState(0);
   const [answers, setAnswers] = useState<(number|null)[]>([]);
-  const [time, setTime] = useState(600);
   const [flagged, setFlagged] = useState<Set<number>>(new Set());
   const [submitting, setSubmitting] = useState(false);
 
@@ -28,14 +27,8 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
     supabase.from('courses').select('id, title').eq('id', state.course).maybeSingle().then(({ data }) => setCourse(data));
   }, [state.course]);
 
-  useEffect(() => {
-    if (stage !== 'quiz') return;
-    const id = setInterval(() => setTime(t => Math.max(0, t - 1)), 1000);
-    return () => clearInterval(id);
-  }, [stage]);
-
   if (!state.course || !state.activeLesson) {
-    return <div style={{padding:40}}><EmptyState icon="🧭" title="No quiz selected" sub="Pick a video first." action={<Btn onClick={()=>onNav('dashboard')}>Back home</Btn>}/></div>;
+    return <div style={{padding:40}}><EmptyState icon="🧭" title="No quiz selected" sub="Pick a video first." action={<Btn onClick={()=>onNav('courses')}>Back to courses</Btn>}/></div>;
   }
   if (loading || !course || !lesson) {
     return <div style={{padding:40, color:'#5B6A7D', fontSize:13}}>Loading…</div>;
@@ -56,8 +49,8 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
               <p style={{color:'#9EC9F0', fontSize:14, margin:0, lineHeight:1.55, maxWidth:540}}>Answer {questions.length} quick questions to confirm you've understood this video. Pass (70%) to unlock the next one.</p>
             </div>
           </div>
-          <div style={{padding:'24px 40px', display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:20, borderBottom:'1px solid #EEF2F7'}}>
-            {[[String(questions.length),'Questions'],['10 min','Time limit'],['70%','Passing score'],['∞','Attempts allowed']].map(([k,v]) => (
+          <div style={{padding:'24px 40px', display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:20, borderBottom:'1px solid #EEF2F7'}}>
+            {[[String(questions.length),'Questions'],['70%','Passing score'],['∞','Attempts allowed']].map(([k,v]) => (
               <div key={v}>
                 <div style={{fontSize:22, fontWeight:700, color:'#0A1F3D', letterSpacing:'-.02em'}}>{k}</div>
                 <div style={{fontSize:12, color:'#5B6A7D', marginTop:2}}>{v}</div>
@@ -84,8 +77,8 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
     const correct = answers.filter((a,i) => a === questions[i].correct).length;
     const pct = Math.round((correct / questions.length) * 100);
     const pass = pct >= 70;
-    const onRetry = () => { setAnswers(Array(questions.length).fill(null)); setIdx(0); setTime(600); setStage('quiz'); };
-    const onNext = () => { if (nextLesson) { setState({ ...state, activeLesson: nextLesson.id }); onNav('player'); } else onNav('dashboard'); };
+    const onRetry = () => { setAnswers(Array(questions.length).fill(null)); setIdx(0); setStage('quiz'); };
+    const onNext = () => { if (nextLesson) { setState({ ...state, activeLesson: nextLesson.id }); onNav('player'); } else onNav('courses'); };
     return (
       <div style={{padding:'28px 40px 48px', maxWidth:1080, animation:'fadeUp .4s'}}>
         <div style={{display:'grid', gridTemplateColumns:'1.2fr 1fr', gap:20}}>
@@ -119,7 +112,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
                 {pass
                   ? <Btn size="lg" onClick={onNext}>{nextLesson ? 'Start next video →' : 'Back to courses →'}</Btn>
                   : <Btn size="lg" onClick={onRetry}>Retry quiz</Btn>}
-                <Btn variant="ghost" size="lg" onClick={()=>onNav('dashboard')}>Back to home</Btn>
+                <Btn variant="ghost" size="lg" onClick={()=>onNav('courses')}>Back to courses</Btn>
               </div>
             </div>
           </Card>
@@ -171,9 +164,6 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
           <h2 style={{fontSize:22, color:'#0A1F3D', margin:'4px 0 0', letterSpacing:'-.02em', fontWeight:700}}>{lesson.title}</h2>
         </div>
         <div style={{marginLeft:'auto', display:'flex', gap:10, alignItems:'center'}}>
-          <Chip color={time<60?'#C2261D':'#0072FF'} bg={time<60?'#FCE1DE':'#E6F4FF'} style={{fontSize:12, padding:'5px 12px'}}>
-            {Math.floor(time/60)}:{String(time%60).padStart(2,'0')} remaining
-          </Chip>
           <Btn variant="ghost" size="sm" onClick={()=>onNav('player')}>Exit</Btn>
         </div>
       </div>

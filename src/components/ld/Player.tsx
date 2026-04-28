@@ -20,6 +20,7 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
   const { lessons, progress, attemptsByLesson, loading, reload } = useCourseLessons(courseId, user?.id ?? null);
   const [videoSrc, setVideoSrc] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const frameRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!courseId) return;
@@ -60,6 +61,10 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
   const [t, setT] = useState(0);
   const [furthest, setFurthest] = useState(0);
   const [showNote, setShowNote] = useState<string | null>(null);
+  const [speed, setSpeed] = useState<1 | 1.5>(1);
+  const [paused, setPaused] = useState(true);
+  const [muted, setMuted] = useState(false);
+  const [vol, setVol] = useState(1);
   const lastSaveRef = useRef(0);
   const furthestRef = useRef(0);
   const completedRef = useRef(false);
@@ -94,6 +99,13 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
     v.addEventListener('loadedmetadata', onLoaded, { once: true });
     return () => v.removeEventListener('loadedmetadata', onLoaded);
   }, [videoSrc]);
+
+  // Apply playback speed (we intentionally only allow 1x or 1.5x).
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    v.playbackRate = speed;
+  }, [speed, videoSrc]);
 
   // If progress row arrives slightly later, align resume position once.
   useEffect(() => {
@@ -134,11 +146,24 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
 
   const startedRef = useRef(false);
   useEffect(() => { startedRef.current = false; }, [activeId]);
+  const seekGuardRef = useRef(false);
   const onTimeUpdate = () => {
     const v = videoRef.current; if (!v) return;
     const cur = v.currentTime;
     setT(cur);
-    if (cur > furthestRef.current) {
+    const prevFurthest = furthestRef.current;
+    // Restrict forward seeking: user must watch the entire video.
+    // Allow a tiny tolerance for normal playback jitter.
+    if (!seekGuardRef.current && cur > prevFurthest + 0.35) {
+      seekGuardRef.current = true;
+      v.currentTime = prevFurthest;
+      setShowNote(`Skipping ahead is disabled — keep watching.`);
+      setTimeout(() => setShowNote(null), 1600);
+      // Let the next timeupdate proceed normally.
+      setTimeout(() => { seekGuardRef.current = false; }, 200);
+      return;
+    }
+    if (cur > prevFurthest) {
       furthestRef.current = cur;
       setFurthest(cur);
     }
@@ -148,11 +173,18 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
       lastSaveRef.current = Date.now();
       saveLessonProgress(user.id, lesson.id, Math.max(resumeAtRef.current, cur), completedRef.current);
     }
-    // anti-skip: if user seeks beyond furthest+3s, snap back
-    if (cur > furthestRef.current + 3) {
-      v.currentTime = furthestRef.current;
-      setShowNote(`Can't skip ahead — watch up to ${fmt(furthestRef.current)} first.`);
-      setTimeout(() => setShowNote(null), 2000);
+  };
+
+  const enforceNoForwardSeek = () => {
+    const v = videoRef.current;
+    if (!v) return;
+    const prevFurthest = furthestRef.current;
+    if (v.currentTime > prevFurthest + 0.35) {
+      seekGuardRef.current = true;
+      v.currentTime = prevFurthest;
+      setShowNote(`Skipping ahead is disabled — keep watching.`);
+      setTimeout(() => setShowNote(null), 1600);
+      setTimeout(() => { seekGuardRef.current = false; }, 200);
     }
   };
 
@@ -163,11 +195,37 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
   };
 
   const toggleFullscreen = () => {
-    const v = videoRef.current; if (!v) return;
-    const anyV = v as HTMLVideoElement & { webkitEnterFullscreen?: () => void };
     if (document.fullscreenElement) { document.exitFullscreen(); return; }
-    if (v.requestFullscreen) v.requestFullscreen();
-    else if (anyV.webkitEnterFullscreen) anyV.webkitEnterFullscreen();
+    // Fullscreen the frame (not the <video>) so browsers don't switch to a native
+    // fullscreen player UI that may show a progress bar.
+    const el = frameRef.current;
+    if (el?.requestFullscreen) el.requestFullscreen();
+  };
+
+  const togglePlay = async () => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused) await v.play();
+    else v.pause();
+  };
+
+  const toggleMute = () => {
+    const v = videoRef.current;
+    if (!v) return;
+    v.muted = !v.muted;
+    setMuted(v.muted);
+  };
+
+  const setVolume = (value: number) => {
+    const v = videoRef.current;
+    if (!v) return;
+    const next = Math.max(0, Math.min(1, value));
+    v.volume = next;
+    setVol(next);
+    if (next > 0 && v.muted) {
+      v.muted = false;
+      setMuted(false);
+    }
   };
 
   if (!courseId) {
@@ -217,18 +275,21 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
           <span style={{color:'#0A1F3D', fontWeight:600}}>Video {lessonIdx+1}</span>
         </div>
 
-        <div style={{position:'relative', background:'#0A1F3D', borderRadius:16, overflow:'hidden', aspectRatio:'16/9', boxShadow:'0 12px 32px rgba(0,42,75,.15)'}}>
+        <div ref={frameRef} style={{position:'relative', background:'#0A1F3D', borderRadius:16, overflow:'hidden', aspectRatio:'16/9', boxShadow:'0 12px 32px rgba(0,42,75,.15)'}}>
           {videoSrc ? (
             <video
               ref={videoRef}
               src={videoSrc}
               onTimeUpdate={onTimeUpdate}
-              onPause={flushProgress}
+              onPlay={() => setPaused(false)}
+              onPause={() => { setPaused(true); flushProgress(); }}
               onEnded={flushProgress}
-              onSeeked={flushProgress}
-              controls
+              onSeeking={enforceNoForwardSeek}
+              onSeeked={() => { enforceNoForwardSeek(); flushProgress(); }}
+              controls={false}
               controlsList="nodownload noplaybackrate"
               disablePictureInPicture
+              playsInline
               style={{width:'100%', height:'100%', background:'#000', objectFit:'contain'}}
             />
           ) : (
@@ -239,6 +300,13 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
             <div style={{display:'flex', alignItems:'center', gap:8, padding:'5px 12px', background:'rgba(0,0,0,.55)', backdropFilter:'blur(8px)', borderRadius:999, color:'#fff', fontSize:11, fontWeight:600}}>
               <span style={{width:7, height:7, background:'#22D38A', borderRadius:99, boxShadow:'0 0 0 4px rgba(34,211,138,.18)'}}/> {Math.round(watchedPct)}% watched
             </div>
+            <button
+              onClick={() => setSpeed(s => (s === 1 ? 1.5 : 1))}
+              title="Playback speed"
+              style={{padding:'6px 10px', background:'rgba(0,0,0,.55)', backdropFilter:'blur(8px)', border:'1px solid rgba(255,255,255,.12)', borderRadius:999, color:'#fff', fontSize:11, fontWeight:800, cursor:'pointer'}}
+            >
+              {speed}x
+            </button>
             <button onClick={toggleFullscreen} title="Fullscreen" style={{padding:'6px 10px', background:'rgba(0,0,0,.55)', backdropFilter:'blur(8px)', border:0, borderRadius:999, color:'#fff', fontSize:11, fontWeight:700, cursor:'pointer', display:'flex', alignItems:'center', gap:6}}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M3 9V3h6M21 9V3h-6M3 15v6h6M21 15v6h-6"/></svg>
               Fullscreen
@@ -248,6 +316,61 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
           {showNote && (
             <div style={{position:'absolute', top:16, left:'50%', transform:'translateX(-50%)', padding:'9px 14px', background:'rgba(194,38,29,.95)', color:'#fff', borderRadius:8, fontSize:12, fontWeight:600}}>{showNote}</div>
           )}
+
+          {/* Custom controls (prevents forward scrubbing) */}
+          <div style={{position:'absolute', left:0, right:0, bottom:0, padding:'10px 12px', background:'linear-gradient(to top, rgba(0,0,0,.65), rgba(0,0,0,0))'}}>
+            <div style={{display:'flex', alignItems:'center', gap:10}}>
+              <button onClick={togglePlay} style={{width:36, height:36, borderRadius:12, border:'1px solid rgba(255,255,255,.14)', background:'rgba(0,0,0,.45)', color:'#fff', cursor:'pointer', fontWeight:800}}>
+                {paused ? '▶' : '⏸'}
+              </button>
+              <div style={{minWidth:96, fontSize:12, color:'rgba(255,255,255,.9)', fontWeight:700}}>
+                {fmt(t)} / {fmt(DUR)}
+              </div>
+              <div style={{flex:1, position:'relative', height:24, display:'flex', alignItems:'center'}}>
+                {/* Track background */}
+                <div style={{position:'absolute', left:0, right:0, height:4, background:'rgba(255,255,255,.18)', borderRadius:99}}/>
+                {/* Watched (rewindable) region */}
+                <div style={{position:'absolute', left:0, width: DUR ? `${Math.min(100, (furthest / DUR) * 100)}%` : '0%', height:4, background:'rgba(34,211,138,.85)', borderRadius:99}}/>
+                {/* Current position marker */}
+                <div style={{position:'absolute', left: DUR ? `${Math.min(100, (t / DUR) * 100)}%` : '0%', width:12, height:12, marginLeft:-6, background:'#fff', borderRadius:99, boxShadow:'0 0 0 2px rgba(0,114,255,.6)'}}/>
+                <input
+                  type="range"
+                  min={0}
+                  max={Math.max(1, DUR)}
+                  step={0.1}
+                  value={Math.min(t, DUR)}
+                  onChange={(e) => {
+                    const v = videoRef.current; if (!v) return;
+                    const target = Number(e.target.value);
+                    // Allow backward seek only; clamp forward attempts to furthest watched.
+                    if (target > furthestRef.current + 0.35) {
+                      v.currentTime = furthestRef.current;
+                      setT(furthestRef.current);
+                      setShowNote('Skipping ahead is disabled — keep watching.');
+                      setTimeout(() => setShowNote(null), 1600);
+                      return;
+                    }
+                    v.currentTime = target;
+                    setT(target);
+                  }}
+                  title="Rewind only — you cannot skip ahead"
+                  style={{position:'absolute', left:0, right:0, width:'100%', height:24, opacity:0, cursor:'pointer', margin:0}}
+                />
+              </div>
+              <button onClick={toggleMute} style={{padding:'8px 10px', borderRadius:10, border:'1px solid rgba(255,255,255,.14)', background:'rgba(0,0,0,.45)', color:'#fff', cursor:'pointer', fontSize:12, fontWeight:800}}>
+                {muted || vol === 0 ? '🔇' : '🔊'}
+              </button>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={muted ? 0 : vol}
+                onChange={(e) => setVolume(Number(e.target.value))}
+                style={{width:84}}
+              />
+            </div>
+          </div>
         </div>
 
         <div style={{marginTop:16}}>

@@ -2,3 +2,6 @@ project_id = "itlqxrlxdrudwtnretcs"
 
 [functions.parse-quiz]
 verify_jwt = false
+
+[functions.sync-employees-daily]
+verify_jwt = false

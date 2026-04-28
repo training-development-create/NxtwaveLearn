@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Btn, Card, Chip, ProgressBar, Avatar, EmptyState } from "./ui";
 import { fmt } from "./data";
@@ -7,10 +7,46 @@ type CourseRow = { id: string; title: string };
 type LessonRow = { id: string; title: string; course_id: string; duration_seconds: number };
 type LearnerRow = {
   id: string; name: string; email: string; empId: string;
+  department?: string | null;
+  subDepartment?: string | null;
+  managerName?: string | null;
+  managerEmail?: string | null;
+  managerContact?: string | null;
   watchSec: number; watchPct: number;       // total watched seconds across this course's lessons / total runtime
   completion: number; score: number; attempts: number; status: string;
 };
 type LessonWatch = { id: string; title: string; avgPct: number; doneCount: number; totalSec: number };
+type ManagerRow = { managerEmail: string; managerName: string; total: number; completed: number; pending: number };
+type ProfileMini = {
+  id: string; full_name: string; email: string; employee_id: string | null;
+  department: string | null; sub_department: string | null; manager_name: string | null; manager_email: string | null; manager_contact: string | null;
+};
+// Internal helper to convert an employees row (with joined dept + manager)
+// into the ProfileMini shape the rest of this file expects.
+type EmployeeJoinRow = {
+  id: string;
+  auth_user_id: string | null;
+  email: string;
+  name: string;
+  employee_id: string | null;
+  departments: { name: string } | null;
+  sub_departments: { name: string } | null;
+  manager: { name: string; email: string; contact: string | null } | null;
+};
+const employeeToProfile = (e: EmployeeJoinRow): ProfileMini | null => {
+  if (!e.auth_user_id) return null;
+  return {
+    id: e.auth_user_id,
+    full_name: e.name || e.email,
+    email: e.email,
+    employee_id: e.employee_id,
+    department: e.departments?.name ?? null,
+    sub_department: e.sub_departments?.name ?? null,
+    manager_name: e.manager?.name ?? null,
+    manager_email: e.manager?.email ?? null,
+    manager_contact: e.manager?.contact ?? null,
+  };
+};
 
 export function AdminAnalytics() {
   const [courses, setCourses] = useState<CourseRow[]>([]);
@@ -23,6 +59,13 @@ export function AdminAnalytics() {
   const [retention, setRetention] = useState<{ id: string; title: string; pct: number }[]>([]);
   const [search, setSearch] = useState('');
   const [detailUser, setDetailUser] = useState<LearnerRow | null>(null);
+  // Department / manager analytics state.
+  const [profilesAll, setProfilesAll] = useState<ProfileMini[]>([]);
+  const [department, setDepartment] = useState<string>('all');
+  const [subDepartment, setSubDepartment] = useState<string>('all');
+  const [managerEmail, setManagerEmail] = useState<string>('all');
+  const [departmentStats, setDepartmentStats] = useState<{ department: string; total: number; completed: number; pct: number }[]>([]);
+  const [managerStats, setManagerStats] = useState<ManagerRow[]>([]);
 
   useEffect(() => {
     (async () => {
@@ -46,13 +89,83 @@ export function AdminAnalytics() {
     const lessonIds = lessonsForCourse.map(l => l.id);
     const totalRuntime = lessonsForCourse.reduce((s, l) => s + (l.duration_seconds || 0), 0);
 
-    const [{ data: enrolls }, { data: prog }, { data: attempts }, { data: profiles }] = await Promise.all([
-      supabase.from('enrollments').select('user_id').eq('course_id', course),
-      lessonIds.length ? supabase.from('lesson_progress').select('user_id, lesson_id, watched_seconds, completed').in('lesson_id', lessonIds) : Promise.resolve({ data: [] as { user_id: string; lesson_id: string; watched_seconds: number; completed: boolean }[] }),
-      lessonIds.length ? supabase.from('quiz_attempts').select('user_id, lesson_id, score, total, passed').in('lesson_id', lessonIds) : Promise.resolve({ data: [] as { user_id: string; lesson_id: string; score: number; total: number; passed: boolean }[] }),
-      supabase.from('profiles').select('id, full_name, email, employee_id'),
+    // Fetch ALL active employees (signed in or not). The previous filter
+    // .not('auth_user_id', 'is', null) hid the ~3300 imported employees who
+    // haven't signed in yet, so dept/manager rollups undercounted dramatically.
+    // We also pull course_assignments + the assigned_employees RPC to scope
+    // analytics to "who this course is actually assigned to."
+    // Supabase JS caps responses at 1000 rows. With 3000+ employees the
+    // analytics rollups silently undercount (and managers' reports look
+    // smaller than they are). Page the employees query.
+    type EmpAnalytics = EmployeeJoinRow & { id: string };
+    const fetchAllEmployees = async (): Promise<EmpAnalytics[]> => {
+      const all: EmpAnalytics[] = [];
+      const pageSize = 1000;
+      for (let from = 0; ; from += pageSize) {
+        const { data, error } = await supabase
+          .from('employees')
+          .select('id, auth_user_id, email, name, employee_id, departments:department_id(name), sub_departments:sub_department_id(name), manager:manager_id(name, email, contact)')
+          .eq('status', 'active')
+          .order('name', { ascending: true })
+          .range(from, from + pageSize - 1);
+        if (error) { console.warn('[AdminAnalytics] employee paging stopped:', error.message); break; }
+        if (!data || data.length === 0) break;
+        all.push(...(data as unknown as EmpAnalytics[]));
+        if (data.length < pageSize) break;
+      }
+      return all;
+    };
+
+    const [{ data: enrolls }, { data: prog }, { data: attempts }, employeesAll, { data: assignedRows }] = await Promise.all([
+      supabase.from('enrollments').select('user_id').eq('course_id', course).range(0, 9999),
+      lessonIds.length ? supabase.from('lesson_progress').select('user_id, lesson_id, watched_seconds, completed').in('lesson_id', lessonIds).range(0, 99999) : Promise.resolve({ data: [] as { user_id: string; lesson_id: string; watched_seconds: number; completed: boolean }[] }),
+      lessonIds.length ? supabase.from('quiz_attempts').select('user_id, lesson_id, score, total, passed').in('lesson_id', lessonIds).range(0, 99999) : Promise.resolve({ data: [] as { user_id: string; lesson_id: string; score: number; total: number; passed: boolean }[] }),
+      fetchAllEmployees(),
+      supabase.rpc('assigned_employees', { _course_id: course }),
     ]);
+
+    // Build a profile list keyed by employees.id (the org id) AND a separate
+    // map keyed by auth_user_id (for joining to lesson_progress / quiz_attempts).
+    type RichProfile = ProfileMini & { employee_row_id: string; signed_in: boolean };
+    const allProfiles: RichProfile[] = ((employeesAll || []) as unknown as (EmployeeJoinRow & { id: string })[])
+      .map(e => {
+        const base = employeeToProfile(e);
+        return {
+          // Use auth_user_id for the public `id` when present, else employee_row_id
+          // so the row can still appear in dept/manager rollups.
+          id: e.auth_user_id ?? e.id,
+          employee_row_id: e.id,
+          signed_in: !!e.auth_user_id,
+          full_name: base?.full_name ?? (e.name || e.email),
+          email: e.email,
+          employee_id: e.employee_id,
+          department: e.departments?.name ?? null,
+          sub_department: e.sub_departments?.name ?? null,
+          manager_name: e.manager?.name ?? null,
+          manager_email: e.manager?.email ?? null,
+          manager_contact: e.manager?.contact ?? null,
+        };
+      });
+
+    // Set of employees this course is assigned to (org-id, not auth-id).
+    // assigned_employees() returns rows like { employee_id: <employees.id> }.
+    const assignedEmployeeRowIds = new Set(((assignedRows || []) as { employee_id: string }[]).map(r => r.employee_id));
+    // Profiles in the assignment scope (whether signed in or not).
+    // When the course has no assignment rows OR is assigned via scope_all=true
+    // (which means assignedRows returns ALL active employees), this naturally
+    // contains everyone — matching the "Show all departments" choice for
+    // scope_all courses.
+    const assignedProfiles = assignedEmployeeRowIds.size
+      ? allProfiles.filter(p => assignedEmployeeRowIds.has(p.employee_row_id))
+      : allProfiles;
+
     const enrolledIds = new Set((enrolls || []).map((e: { user_id: string }) => e.user_id));
+    // IMPORTANT: profilesAll powers the cascading dept / sub-dept / manager
+    // dropdowns AND the per-video table. Scoping it to assignedProfiles means
+    // the filters only show departments / sub-depts / managers the SELECTED
+    // course is actually assigned to.
+    setProfilesAll(assignedProfiles);
+    const profilesTyped: ProfileMini[] = assignedProfiles;
     const progArr = (prog || []) as { user_id: string; lesson_id: string; watched_seconds: number; completed: boolean }[];
     const attArr = (attempts || []) as { user_id: string; lesson_id: string; score: number; total: number; passed: boolean }[];
 
@@ -84,7 +197,7 @@ export function AdminAnalytics() {
       return { id: l.id, title: l.title, avgPct, doneCount, totalSec };
     }));
 
-    const profById = new Map(((profiles || []) as { id: string; full_name: string; email: string; employee_id: string | null }[]).map(p => [p.id, p]));
+    const profById = new Map(profilesTyped.map(p => [p.id, p]));
     const rows: LearnerRow[] = Array.from(enrolledIds).map(uid => {
       const u = profById.get(uid);
       if (!u) return null;
@@ -97,11 +210,49 @@ export function AdminAnalytics() {
       const status = completion >= 70 ? 'active' : completion >= 30 ? 'at-risk' : 'overdue';
       return {
         id: uid, name: u.full_name || u.email, email: u.email, empId: u.employee_id || '—',
+        department: u.department, subDepartment: u.sub_department, managerName: u.manager_name, managerEmail: u.manager_email, managerContact: u.manager_contact,
         watchSec, watchPct, completion, score, attempts: userAtt.length, status,
       };
     }).filter(Boolean) as LearnerRow[];
     rows.sort((a, b) => b.watchSec - a.watchSec);
     setLearners(rows);
+
+    // -------- Department + Manager rollups (course-scoped) --------
+    // "Completed" only applies to signed-in users (only they have progress
+    // rows). Total counts every assigned employee — signed in or not — so
+    // an admin can see "60 assigned in HR, 12 completed" rather than
+    // "12 assigned, 12 completed" which is misleading.
+    const isCourseComplete = (authId: string) =>
+      lessonIds.length > 0 && lessonIds.every(lid => progArr.some(p => p.user_id === authId && p.lesson_id === lid && p.completed));
+
+    // Department stats (over assigned scope, includes not-signed-in)
+    const deptMap = new Map<string, { total: number; completed: number }>();
+    assignedProfiles.forEach(p => {
+      const d = p.department || 'Unassigned';
+      const cur = deptMap.get(d) || { total: 0, completed: 0 };
+      cur.total += 1;
+      // Only count completion for users who've actually signed in (others can't have progress).
+      if (p.signed_in && isCourseComplete(p.id)) cur.completed += 1;
+      deptMap.set(d, cur);
+    });
+    const deptArr = Array.from(deptMap.entries())
+      .map(([department, v]) => ({ department, total: v.total, completed: v.completed, pct: v.total ? Math.round((v.completed / v.total) * 100) : 0 }))
+      .sort((a, b) => b.pct - a.pct || b.total - a.total);
+    setDepartmentStats(deptArr);
+
+    // Manager stats — keyed by email when available, fallback to name.
+    const mgrMap = new Map<string, { managerEmail: string; managerName: string; total: number; completed: number }>();
+    assignedProfiles.forEach(p => {
+      const key = p.manager_email || p.manager_name || 'Unassigned';
+      const cur = mgrMap.get(key) || { managerEmail: p.manager_email || '', managerName: p.manager_name || 'Unassigned', total: 0, completed: 0 };
+      cur.total += 1;
+      if (p.signed_in && isCourseComplete(p.id)) cur.completed += 1;
+      mgrMap.set(key, cur);
+    });
+    const mgrArr: ManagerRow[] = Array.from(mgrMap.values())
+      .map(m => ({ ...m, pending: m.total - m.completed }))
+      .sort((a, b) => b.pending - a.pending || b.total - a.total);
+    setManagerStats(mgrArr);
   };
 
   useEffect(() => { loadStats(); /* eslint-disable-next-line */ }, [course, lessons]);
@@ -127,7 +278,42 @@ export function AdminAnalytics() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [course, lessons]);
 
-  const filtered = learners.filter(l => !search || l.name.toLowerCase().includes(search.toLowerCase()) || l.empId.toLowerCase().includes(search.toLowerCase()) || l.email.toLowerCase().includes(search.toLowerCase()));
+  const filtered = learners.filter(l => {
+    if (department !== 'all' && (l.department || 'Unassigned') !== department) return false;
+    if (subDepartment !== 'all' && (l.subDepartment || 'Unassigned') !== subDepartment) return false;
+    if (managerEmail !== 'all') {
+      const key = l.managerEmail || l.managerName || 'Unassigned';
+      if (key !== managerEmail) return false;
+    }
+    if (search && !`${l.name} ${l.empId} ${l.email}`.toLowerCase().includes(search.toLowerCase())) return false;
+    return true;
+  });
+
+  // Build distinct lists for the dropdowns (course-scoped via profilesAll set
+  // captured during loadStats).
+  const departmentOptions = Array.from(new Set(profilesAll.map(p => p.department || 'Unassigned'))).sort();
+  const subDepartmentOptions = Array.from(
+    new Set(
+      profilesAll
+        .filter((p) => department === 'all' || (p.department || 'Unassigned') === department)
+        .map((p) => p.sub_department || 'Unassigned'),
+    ),
+  ).sort();
+  const managerOptions = Array.from(new Map(
+    profilesAll
+      .filter((p) => (department === 'all' || (p.department || 'Unassigned') === department))
+      .filter((p) => (subDepartment === 'all' || (p.sub_department || 'Unassigned') === subDepartment))
+      .map(p => {
+    const key = p.manager_email || p.manager_name || 'Unassigned';
+    return [key, { key, label: p.manager_name || p.manager_email || 'Unassigned' }];
+  }),
+  ).values()).sort((a, b) => a.label.localeCompare(b.label));
+
+  useEffect(() => {
+    if (managerEmail === 'all') return;
+    const allowed = new Set(managerOptions.map(m => m.key));
+    if (!allowed.has(managerEmail)) setManagerEmail('all');
+  }, [department, subDepartment, managerOptions, managerEmail]);
 
   if (courses.length === 0) {
     return <div style={{padding:36}}><EmptyState icon="📊" title="No courses to analyze" sub="Once you publish a course in Upload & Quiz, analytics will start tracking it."/></div>;
@@ -147,103 +333,235 @@ export function AdminAnalytics() {
             {courseLessons.map(l => <option key={l.id} value={l.id}>{l.title}</option>)}
           </select>
         )}
+        <select value={department} onChange={e=>setDepartment(e.target.value)} title="Filter by department" style={{padding:'10px 14px', border:'1px solid #DDE4ED', borderRadius:10, fontSize:13, background:'#fff', minWidth:200, fontWeight:600}}>
+          <option value="all">All departments</option>
+          {departmentOptions.map(d => <option key={d} value={d}>{d}</option>)}
+        </select>
+        <select value={subDepartment} onChange={e=>setSubDepartment(e.target.value)} title="Filter by sub-department" style={{padding:'10px 14px', border:'1px solid #DDE4ED', borderRadius:10, fontSize:13, background:'#fff', minWidth:220, fontWeight:600}}>
+          <option value="all">All sub-departments</option>
+          {subDepartmentOptions.map(sd => <option key={sd} value={sd}>{sd}</option>)}
+        </select>
+        <select value={managerEmail} onChange={e=>setManagerEmail(e.target.value)} title="Filter by manager" style={{padding:'10px 14px', border:'1px solid #DDE4ED', borderRadius:10, fontSize:13, background:'#fff', minWidth:220, fontWeight:600}}>
+          <option value="all">All managers</option>
+          {managerOptions.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
+        </select>
       </div>
 
-      <div style={{display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:16, marginBottom:20}}>
-        <Tile label="Enrolled" v={String(kpi.enrolled)} sub="learners assigned" c="#0072FF"/>
-        <Tile label="Completion" v={`${kpi.completion}%`} sub="finished all videos" c="#E08A1E"/>
-      </div>
-
-      {selectedLesson && (
-        <Card pad={0} style={{marginBottom:20}}>
-          <div style={{padding:'18px 22px', borderBottom:'1px solid #EEF2F7'}}>
-            <div className="eyebrow">▶ PER-LEARNER WATCH FOR THIS VIDEO</div>
-            <div style={{fontSize:16, fontWeight:800, color:'#002A4B', marginTop:2}}>{selectedLesson.title} · runtime {fmt(selectedLesson.duration_seconds)}</div>
+      {/* Department completion + Manager leaderboard */}
+      <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:16, marginBottom:20}}>
+        <Card pad={0}>
+          <div style={{padding:'14px 18px', borderBottom:'1px solid #EEF2F7'}}>
+            <div className="eyebrow">DEPARTMENT COMPLETION (THIS COURSE)</div>
           </div>
-          <PerLessonWatch lessonId={selectedLesson.id} runtime={selectedLesson.duration_seconds} courseId={course}/>
+          <div style={{maxHeight:260, overflowY:'auto'}}>
+            {departmentStats.length === 0 ? (
+              <div style={{padding:20, color:'#8A97A8', fontSize:12}}>No enrollments yet.</div>
+            ) : (
+              <table style={{width:'100%', borderCollapse:'collapse'}}>
+                <thead><tr style={{background:'#FAFBFE'}}>
+                  {['Department','Total','Completed','%'].map(h => (
+                    <th key={h} style={{padding:'9px 14px', textAlign:'left', fontSize:10, color:'#8A97A8', fontWeight:700, letterSpacing:'.08em', borderBottom:'1px solid #EEF2F7'}}>{h.toUpperCase()}</th>
+                  ))}
+                </tr></thead>
+                <tbody>
+                  {departmentStats.map(d => (
+                    <tr key={d.department} onClick={()=>setDepartment(d.department)} style={{borderBottom:'1px solid #F7F9FC', cursor:'pointer', background: department===d.department ? '#F2F9FF' : undefined}}>
+                      <td style={{padding:'9px 14px', fontSize:13, fontWeight:600, color:'#002A4B'}}>{d.department}</td>
+                      <td style={{padding:'9px 14px', fontSize:13, color:'#3B4A5E'}}>{d.total}</td>
+                      <td style={{padding:'9px 14px', fontSize:13, color:'#17A674', fontWeight:700}}>{d.completed}</td>
+                      <td style={{padding:'9px 14px', minWidth:140}}><ProgressBar value={d.pct} showLabel height={4}/></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
         </Card>
-      )}
+
+        <Card pad={0}>
+          <div style={{padding:'14px 18px', borderBottom:'1px solid #EEF2F7'}}>
+            <div className="eyebrow">MANAGER LEADERBOARD — RISK (HIGHEST PENDING FIRST)</div>
+          </div>
+          <div style={{maxHeight:260, overflowY:'auto'}}>
+            {managerStats.length === 0 ? (
+              <div style={{padding:20, color:'#8A97A8', fontSize:12}}>No managers yet — Darwin sync hasn't populated profiles.</div>
+            ) : (
+              <table style={{width:'100%', borderCollapse:'collapse'}}>
+                <thead><tr style={{background:'#FAFBFE'}}>
+                  {['Manager','Total','Completed','Pending'].map(h => (
+                    <th key={h} style={{padding:'9px 14px', textAlign:'left', fontSize:10, color:'#8A97A8', fontWeight:700, letterSpacing:'.08em', borderBottom:'1px solid #EEF2F7'}}>{h.toUpperCase()}</th>
+                  ))}
+                </tr></thead>
+                <tbody>
+                  {managerStats.map(m => {
+                    const key = m.managerEmail || m.managerName || 'Unassigned';
+                    return (
+                      <tr key={key} onClick={()=>setManagerEmail(key)} style={{borderBottom:'1px solid #F7F9FC', cursor:'pointer', background: managerEmail===key ? '#F2F9FF' : undefined}}>
+                        <td style={{padding:'9px 14px', fontSize:13, fontWeight:600, color:'#002A4B'}}>
+                          {m.managerName || '—'}
+                          {m.managerEmail && <div style={{fontSize:11, color:'#5B6A7D', fontWeight:500}}>{m.managerEmail}</div>}
+                        </td>
+                        <td style={{padding:'9px 14px', fontSize:13, color:'#3B4A5E', fontWeight:700}}>{m.total}</td>
+                        <td style={{padding:'9px 14px', fontSize:13, color:'#17A674', fontWeight:700}}>{m.completed}</td>
+                        <td style={{padding:'9px 14px', fontSize:13, color: m.pending > 0 ? '#C2261D' : '#8A97A8', fontWeight:800}}>{m.pending}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </Card>
+      </div>
+
+      {/* Manager team breakdown — only when a manager is picked */}
+      {managerEmail !== 'all' && (() => {
+        const learnerByAuthId = new Map(learners.map(l => [l.id, l]));
+        // All employees under this manager (signed in or not), from profilesAll.
+        const teamRows = profilesAll
+          .filter(p => (p.manager_email || p.manager_name || 'Unassigned') === managerEmail)
+          .map(p => {
+            const lr = learnerByAuthId.get(p.id);
+            return {
+              id: p.id,
+              name: p.full_name || p.email,
+              email: p.email,
+              empId: p.employee_id || '—',
+              department: p.department,
+              subDepartment: p.sub_department,
+              completion: lr?.completion ?? 0,
+              watchPct: lr?.watchPct ?? 0,
+              score: lr?.score ?? 0,
+              attempts: lr?.attempts ?? 0,
+              signedIn: !!lr,
+              status: lr ? (lr.completion === 100 ? 'completed' : lr.completion > 0 ? 'in-progress' : 'not-started')
+                         : 'not-signed-in',
+            };
+          })
+          .sort((a, b) => b.completion - a.completion || a.name.localeCompare(b.name));
+        const completed = teamRows.filter(r => r.status === 'completed').length;
+        const inProgress = teamRows.filter(r => r.status === 'in-progress').length;
+        const notStarted = teamRows.filter(r => r.status === 'not-started').length;
+        const notSignedIn = teamRows.filter(r => r.status === 'not-signed-in').length;
+        const managerLabel = managerOptions.find(m => m.key === managerEmail)?.label || managerEmail;
+
+        return (
+          <Card pad={0} style={{marginBottom:20}}>
+            <div style={{padding:'14px 18px', display:'flex', alignItems:'center', gap:14, borderBottom:'1px solid #EEF2F7'}}>
+              <div>
+                <div className="eyebrow">MANAGER TEAM BREAKDOWN</div>
+                <div style={{fontSize:14, fontWeight:800, color:'#0A1F3D', marginTop:2}}>{managerLabel}'s team — {teamRows.length} employee{teamRows.length === 1 ? '' : 's'}</div>
+              </div>
+              <div style={{marginLeft:'auto', display:'flex', gap:8, flexWrap:'wrap'}}>
+                <Chip color="#17A674">{completed} completed</Chip>
+                <Chip color="#E08A1E">{inProgress} in progress</Chip>
+                <Chip color="#C2261D">{notStarted} not started</Chip>
+                {notSignedIn > 0 && <Chip color="#8A97A8">{notSignedIn} pending login</Chip>}
+                <button onClick={()=>setManagerEmail('all')} style={{padding:'6px 12px', background:'#F7F9FC', border:'1px solid #DDE4ED', borderRadius:6, fontSize:11, fontWeight:600, color:'#3B4A5E', cursor:'pointer'}}>Clear ✕</button>
+              </div>
+            </div>
+            <div style={{maxHeight:380, overflowY:'auto'}}>
+              {teamRows.length === 0 ? (
+                <div style={{padding:24, fontSize:13, color:'#8A97A8'}}>No reports found for this manager in the assigned scope.</div>
+              ) : (
+                <table style={{width:'100%', borderCollapse:'collapse'}}>
+                  <thead>
+                    <tr style={{background:'#FAFBFE'}}>
+                      {['Employee', 'Sub-dept', 'Completion', 'Quiz %', 'Status'].map(h => (
+                        <th key={h} style={{padding:'10px 16px', textAlign:'left', fontSize:10, color:'#8A97A8', fontWeight:700, letterSpacing:'.08em', borderBottom:'1px solid #EEF2F7'}}>{h.toUpperCase()}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {teamRows.map(r => (
+                      <tr
+                        key={r.id}
+                        onClick={r.signedIn ? () => setDetailUser(learnerByAuthId.get(r.id) as LearnerRow) : undefined}
+                        style={{borderBottom:'1px solid #F7F9FC', cursor: r.signedIn ? 'pointer' : 'default', opacity: r.status === 'not-signed-in' ? 0.65 : 1}}
+                      >
+                        <td style={{padding:'10px 16px'}}>
+                          <div style={{display:'flex', alignItems:'center', gap:10}}>
+                            <Avatar name={r.name} size={26}/>
+                            <div>
+                              <div style={{fontSize:13, fontWeight:600, color:'#002A4B'}}>{r.name}</div>
+                              <div style={{fontSize:11, color:'#5B6A7D'}}>{r.email} · <code style={{fontSize:10, background:'#F2F9FF', padding:'1px 5px', borderRadius:3, color:'#0072FF', fontWeight:700}}>{r.empId}</code></div>
+                            </div>
+                          </div>
+                        </td>
+                        <td style={{padding:'10px 16px', fontSize:12, color:'#5B6A7D'}}>{r.subDepartment || '—'}</td>
+                        <td style={{padding:'10px 16px', minWidth:160}}><ProgressBar value={r.completion} showLabel/></td>
+                        <td style={{padding:'10px 16px', fontSize:12, fontWeight:800, color: r.score >= 70 ? '#17A674' : r.score > 0 ? '#C2261D' : '#8A97A8'}}>{r.score > 0 ? `${r.score}%` : '—'}</td>
+                        <td style={{padding:'10px 16px'}}>
+                          <Chip color={r.status === 'completed' ? '#17A674' : r.status === 'in-progress' ? '#E08A1E' : r.status === 'not-started' ? '#C2261D' : '#8A97A8'}>
+                            {r.status === 'completed' ? 'Completed' : r.status === 'in-progress' ? 'In progress' : r.status === 'not-started' ? 'Not started' : 'Pending login'}
+                          </Chip>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </Card>
+        );
+      })()}
 
       <Card pad={0}>
         <div style={{padding:'18px 22px', display:'flex', alignItems:'center', borderBottom:'1px solid #EEF2F7'}}>
           <div>
-            <div className="eyebrow">EMPLOYEE-LEVEL DETAIL</div>
-            <div style={{fontSize:16, fontWeight:800, color:'#002A4B', marginTop:2}}>{learners.length} enrolled · showing {filtered.length}</div>
+            <div className="eyebrow">PER-LEARNER WATCH (CLICK TO OPEN PROFILE)</div>
+            <div style={{fontSize:16, fontWeight:800, color:'#002A4B', marginTop:2}}>
+              {selectedLesson ? `${selectedLesson.title} · runtime ${fmt(selectedLesson.duration_seconds)}` : 'Select a video'}
+            </div>
           </div>
-          <div style={{marginLeft:'auto', display:'flex', gap:8}}>
-            <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search employee, ID or email…" style={{padding:'8px 12px', border:'1px solid #DDE4ED', borderRadius:8, fontSize:12, minWidth:240}}/>
-          </div>
+          {selectedLesson && (
+            <div style={{marginLeft:'auto'}}>
+              <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search learner…" style={{padding:'8px 12px', border:'1px solid #DDE4ED', borderRadius:8, fontSize:12, minWidth:220}}/>
+            </div>
+          )}
         </div>
-        {learners.length === 0 ? (
-          <div style={{padding:36}}><EmptyState icon="👥" title="No enrollments yet" sub="Once learners self-enroll or start this course, they'll appear here."/></div>
+        {selectedLesson ? (
+          <PerLessonWatch
+            lessonId={selectedLesson.id}
+            runtime={selectedLesson.duration_seconds}
+            courseId={course}
+            search={search}
+            allowedUserIds={(department !== 'all' || subDepartment !== 'all' || managerEmail !== 'all') ? new Set(filtered.map(f => f.id)) : null}
+            onOpenUser={(u)=>setDetailUser(u)}
+          />
         ) : (
-          <div style={{overflowX:'auto'}}>
-            <table style={{width:'100%', borderCollapse:'collapse', minWidth:900}}>
-              <thead>
-                <tr style={{background:'#F7F9FC'}}>
-                  {['Employee','Emp ID','Watch time','Watch %','Completion','Quiz score','Attempts','Status'].map(h => (
-                    <th key={h} style={{padding:'12px 16px', textAlign:'left', fontSize:10, color:'#8A97A8', fontWeight:700, letterSpacing:'.08em', borderBottom:'1px solid #EEF2F7', whiteSpace:'nowrap'}}>{h.toUpperCase()}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map(l => (
-                  <tr key={l.id} onClick={()=>setDetailUser(l)} style={{borderBottom:'1px solid #F7F9FC', cursor:'pointer'}}>
-                    <td style={{padding:'12px 16px'}}>
-                      <div style={{display:'flex', alignItems:'center', gap:10}}>
-                        <Avatar name={l.name} size={30}/>
-                        <div>
-                          <div style={{fontSize:13, fontWeight:600, color:'#0072FF', textDecoration:'underline'}}>{l.name}</div>
-                          <div style={{fontSize:11, color:'#5B6A7D'}}>{l.email}</div>
-                        </div>
-                      </div>
-                    </td>
-                    <td style={{padding:'12px 16px'}}>
-                      <code style={{fontSize:12, background:'#F7F9FC', padding:'3px 8px', borderRadius:6, color:'#0072FF', fontWeight:700}}>{l.empId}</code>
-                    </td>
-                    <td style={{padding:'12px 16px', fontSize:13, fontWeight:700, color:'#002A4B'}}>{fmt(l.watchSec)}</td>
-                    <td style={{padding:'12px 16px', minWidth:160}}><ProgressBar value={l.watchPct} showLabel/></td>
-                    <td style={{padding:'12px 16px', minWidth:160}}><ProgressBar value={l.completion} showLabel/></td>
-                    <td style={{padding:'12px 16px'}}>
-                      <Chip color={l.score>=85?'#17A674':l.score>=70?'#E08A1E':l.score>0?'#C2261D':'#8A97A8'}>{l.score>0?`${l.score}%`:'—'}</Chip>
-                    </td>
-                    <td style={{padding:'12px 16px', fontSize:13, color:'#3B4A5E'}}>{l.attempts}</td>
-                    <td style={{padding:'12px 16px'}}>
-                      <Chip color={l.status==='active'?'#17A674':l.status==='at-risk'?'#E08A1E':'#C2261D'}>{l.status}</Chip>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <div style={{padding:24}}><EmptyState icon="🎬" title="Select a video" sub="Choose a course and video to see watch progress and assessments."/></div>
         )}
       </Card>
 
-      {detailUser && <EmployeeDetailModal user={detailUser} onClose={()=>setDetailUser(null)}/>}
+      {detailUser && <EmployeeDetailModal user={detailUser} onClose={()=>setDetailUser(null)} focusCourseId={course}/>}
     </div>
   );
 }
 
-function EmployeeDetailModal({ user, onClose }: { user: LearnerRow; onClose: () => void }) {
+function EmployeeDetailModal({ user, onClose, focusCourseId }: { user: LearnerRow; onClose: () => void; focusCourseId: string }) {
   type CourseDetail = {
     id: string; title: string; emoji: string; enrolled: boolean;
     totalRuntime: number; totalWatched: number; lessonsTotal: number; lessonsCompleted: number;
     avgScore: number; status: 'completed' | 'in-progress' | 'not-started';
-    lessons: { id: string; title: string; runtime: number; watched: number; pct: number; completed: boolean; bestScore: number }[];
+    lessons: { id: string; title: string; runtime: number; watched: number; pct: number; completed: boolean; bestScore: number; attempts: number }[];
   };
   const [details, setDetails] = useState<CourseDetail[]>([]);
   const [loading, setLoading] = useState(true);
+  const [lastLoginAt, setLastLoginAt] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
       setLoading(true);
-      const [{ data: courses }, { data: lessons }, { data: enrolls }, { data: progress }, { data: attempts }] = await Promise.all([
+      const [{ data: courses }, { data: lessons }, { data: enrolls }, { data: progress }, { data: attempts }, { data: prof }] = await Promise.all([
         supabase.from('courses').select('id, title, emoji').order('created_at', { ascending: true }),
         supabase.from('lessons').select('id, course_id, title, duration_seconds, position').order('position', { ascending: true }),
         supabase.from('enrollments').select('course_id').eq('user_id', user.id),
         supabase.from('lesson_progress').select('lesson_id, watched_seconds, completed').eq('user_id', user.id),
         supabase.from('quiz_attempts').select('lesson_id, score, total, passed').eq('user_id', user.id),
+        supabase.from('employees').select('last_login_at').eq('auth_user_id', user.id).maybeSingle(),
       ]);
+      setLastLoginAt((prof as any)?.last_login_at ?? null);
       const enrolledIds = new Set((enrolls || []).map((e: { course_id: string }) => e.course_id));
       const progByLesson = new Map(((progress || []) as { lesson_id: string; watched_seconds: number; completed: boolean }[]).map(p => [p.lesson_id, p]));
       const attsByLesson = new Map<string, { score: number; total: number; passed: boolean }[]>();
@@ -264,7 +582,7 @@ function EmployeeDetailModal({ user, onClose }: { user: LearnerRow; onClose: () 
           return {
             id: l.id, title: l.title, runtime: l.duration_seconds || 0, watched,
             pct: l.duration_seconds ? Math.min(100, Math.round((watched / l.duration_seconds) * 100)) : 0,
-            completed: !!p?.completed, bestScore,
+            completed: !!p?.completed, bestScore, attempts: atts.length,
           };
         });
         const totalRuntime = ls.reduce((s, l) => s + (l.duration_seconds || 0), 0);
@@ -280,15 +598,17 @@ function EmployeeDetailModal({ user, onClose }: { user: LearnerRow; onClose: () 
           totalRuntime, totalWatched, lessonsTotal: ls.length, lessonsCompleted, avgScore, status, lessons: lessonRows,
         };
       });
-      // Show only courses the user is enrolled in OR has any activity on.
-      setDetails(out.filter(c => c.enrolled || c.totalWatched > 0 || c.lessons.some(l => l.bestScore > 0)));
+      // Video-centric: show only the selected course.
+      setDetails(out.filter(c => c.id === focusCourseId));
       setLoading(false);
     })();
-  }, [user.id]);
+  }, [user.id, focusCourseId]);
 
-  const attended = details.filter(c => c.totalWatched > 0).length;
-  const completed = details.filter(c => c.status === 'completed').length;
-  const totalWatch = details.reduce((s, c) => s + c.totalWatched, 0);
+  const d = details[0];
+  const courseCompletionPct = d?.lessonsTotal ? Math.round((d.lessonsCompleted / d.lessonsTotal) * 100) : 0;
+  const watchPct = d?.totalRuntime ? Math.min(100, Math.round((d.totalWatched / d.totalRuntime) * 100)) : 0;
+  const assessmentsCompleted = d?.lessons.filter(l => l.bestScore > 0 && l.completed).length ?? 0;
+  const assessmentsTotal = d?.lessons.length ?? 0;
 
   return (
     <div onClick={onClose} style={{position:'fixed', inset:0, background:'rgba(10,31,61,.55)', zIndex:1000, display:'grid', placeItems:'center', padding:24, animation:'fadeUp .2s'}}>
@@ -298,14 +618,31 @@ function EmployeeDetailModal({ user, onClose }: { user: LearnerRow; onClose: () 
           <div style={{flex:1, minWidth:0}}>
             <div style={{fontSize:16, fontWeight:800, color:'#002A4B'}}>{user.name}</div>
             <div style={{fontSize:12, color:'#5B6A7D'}}>{user.email} · <code style={{background:'#F7F9FC', padding:'2px 6px', borderRadius:4, color:'#0072FF', fontWeight:700}}>{user.empId}</code></div>
+            {(user.department || user.subDepartment || user.managerName) && (
+              <div style={{marginTop:6, display:'flex', flexWrap:'wrap', gap:8, fontSize:11, color:'#3B4A5E'}}>
+                {user.department && <span style={{padding:'3px 8px', background:'#F2F9FF', border:'1px solid #CCEAFF', borderRadius:6, fontWeight:600}}>Dept: {user.department}</span>}
+                {user.subDepartment && <span style={{padding:'3px 8px', background:'#F6F8FC', border:'1px solid #E6ECF5', borderRadius:6, fontWeight:600}}>Sub-dept: {user.subDepartment}</span>}
+                {user.managerName && <span style={{padding:'3px 8px', background:'#FAFBFD', border:'1px solid #EEF2F7', borderRadius:6, fontWeight:600}}>Manager: {user.managerName}{user.managerContact ? ` · ${user.managerContact}` : ''}</span>}
+                {user.managerEmail && <span style={{padding:'3px 8px', background:'#FAFBFD', border:'1px solid #EEF2F7', borderRadius:6, fontWeight:500, color:'#5B6A7D'}}>{user.managerEmail}</span>}
+              </div>
+            )}
+            {lastLoginAt && (
+              <div style={{marginTop:8}}>
+                <span style={{display:'inline-flex', alignItems:'center', gap:8, padding:'6px 10px', borderRadius:999, background:'#F7F9FC', border:'1px solid #EEF2F7'}}>
+                  <span style={{fontSize:11, fontWeight:800, color:'#5B6A7D', letterSpacing:'.06em', textTransform:'uppercase'}}>Last login</span>
+                  <span style={{width:1, height:14, background:'#DDE4ED'}}/>
+                  <span style={{fontSize:12, fontWeight:800, color:'#002A4B'}}>{new Date(lastLoginAt).toLocaleString()}</span>
+                </span>
+              </div>
+            )}
           </div>
           <button onClick={onClose} style={{padding:'6px 14px', background:'#F7F9FC', border:'1px solid #DDE4ED', borderRadius:8, fontSize:13, fontWeight:600, color:'#3B4A5E', cursor:'pointer'}}>Close</button>
         </div>
 
         <div style={{padding:'16px 24px', display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:12, borderBottom:'1px solid #EEF2F7', background:'#FAFBFD'}}>
-          <MiniStat label="Courses attended" v={String(attended)}/>
-          <MiniStat label="Courses completed" v={String(completed)}/>
-          <MiniStat label="Total watch time" v={fmt(totalWatch)}/>
+          <MiniStat label="Course completion" v={`${courseCompletionPct}%`}/>
+          <MiniStat label="Video watch progress" v={`${watchPct}%`}/>
+          <MiniStat label="Assessment completion" v={`${assessmentsCompleted}/${assessmentsTotal}`}/>
         </div>
 
         <div style={{flex:1, overflowY:'auto', padding:'16px 24px 24px'}}>
@@ -332,7 +669,7 @@ function EmployeeDetailModal({ user, onClose }: { user: LearnerRow; onClose: () 
                 <table style={{width:'100%', borderCollapse:'collapse'}}>
                   <thead>
                     <tr style={{background:'#fff'}}>
-                      {['Video','Watched','Of runtime','Quiz','Status'].map(h => (
+                      {['Video','Watched','Of runtime','Quiz %','Attempts','Status'].map(h => (
                         <th key={h} style={{padding:'8px 14px', textAlign:'left', fontSize:10, color:'#8A97A8', fontWeight:700, letterSpacing:'.08em', borderBottom:'1px solid #F1F4F9'}}>{h.toUpperCase()}</th>
                       ))}
                     </tr>
@@ -344,6 +681,7 @@ function EmployeeDetailModal({ user, onClose }: { user: LearnerRow; onClose: () 
                         <td style={{padding:'8px 14px', fontSize:13, fontWeight:700, color:'#002A4B'}}>{fmt(l.watched)}</td>
                         <td style={{padding:'8px 14px', minWidth:160}}><ProgressBar value={l.pct} showLabel height={4}/></td>
                         <td style={{padding:'8px 14px', fontSize:12, color: l.bestScore>=70?'#17A674':l.bestScore>0?'#C2261D':'#8A97A8', fontWeight:700}}>{l.bestScore>0?`${l.bestScore}%`:'—'}</td>
+                        <td style={{padding:'8px 14px', fontSize:12, color:'#5B6A7D', fontWeight:700}}>{l.attempts || 0}</td>
                         <td style={{padding:'8px 14px'}}>
                           <Chip color={l.completed?'#17A674':l.watched>0?'#E08A1E':'#8A97A8'}>{l.completed?'Done':l.watched>0?'Watching':'—'}</Chip>
                         </td>
@@ -369,34 +707,60 @@ function MiniStat({ label, v }: { label: string; v: string }) {
   );
 }
 
-function PerLessonWatch({ lessonId, runtime, courseId }: { lessonId: string; runtime: number; courseId: string }) {
-  const [rows, setRows] = useState<{ id: string; name: string; email: string; sec: number; pct: number; completed: boolean }[]>([]);
+function PerLessonWatch({ lessonId, runtime, courseId, search, allowedUserIds, onOpenUser }: { lessonId: string; runtime: number; courseId: string; search: string; allowedUserIds: Set<string> | null; onOpenUser?: (u: LearnerRow) => void }) {
+  const [rows, setRows] = useState<{ id: string; name: string; email: string; empId: string; department?: string | null; managerName?: string | null; managerEmail?: string | null; managerContact?: string | null; sec: number; pct: number; completed: boolean; quizPct: number; attempts: number }[]>([]);
+  const chNameRef = useRef<string>('');
   const load = async () => {
-    const [{ data: enrolls }, { data: progress }, { data: profiles }] = await Promise.all([
+    const [{ data: enrolls }, { data: progress }, { data: profiles }, { data: attempts }] = await Promise.all([
       supabase.from('enrollments').select('user_id').eq('course_id', courseId),
       supabase.from('lesson_progress').select('user_id, watched_seconds, completed').eq('lesson_id', lessonId),
-      supabase.from('profiles').select('id, full_name, email'),
+      supabase.from('employees')
+        .select('id, auth_user_id, email, name, employee_id, departments:department_id(name), sub_departments:sub_department_id(name), manager:manager_id(name, email, contact)')
+        .not('auth_user_id', 'is', null),
+      supabase.from('quiz_attempts').select('user_id, score, total').eq('lesson_id', lessonId),
     ]);
     const enrolledIds = new Set((enrolls || []).map((e: { user_id: string }) => e.user_id));
-    const profById = new Map(((profiles || []) as { id: string; full_name: string; email: string }[]).map(p => [p.id, p]));
+    const profById = new Map(
+      ((profiles || []) as unknown as EmployeeJoinRow[])
+        .map(employeeToProfile)
+        .filter((p): p is ProfileMini => p !== null)
+        .map(p => [p.id, p])
+    );
     const progByUser = new Map(((progress || []) as { user_id: string; watched_seconds: number; completed: boolean }[]).map(p => [p.user_id, p]));
-    const out = Array.from(enrolledIds).map(uid => {
-      const u = profById.get(uid);
-      const p = progByUser.get(uid);
-      const sec = p?.watched_seconds || 0;
-      return {
-        id: uid, name: u?.full_name || u?.email || '—', email: u?.email || '',
-        sec, pct: runtime ? Math.min(100, Math.round((sec / runtime) * 100)) : 0,
-        completed: !!p?.completed,
-      };
+    const attsByUser = new Map<string, { score: number; total: number }[]>();
+    ((attempts || []) as { user_id: string; score: number; total: number }[]).forEach(a => {
+      const arr = attsByUser.get(a.user_id) || [];
+      arr.push(a);
+      attsByUser.set(a.user_id, arr);
     });
+    const out = Array.from(enrolledIds)
+      .filter(uid => !allowedUserIds || allowedUserIds.has(uid))
+      .map(uid => {
+        const u = profById.get(uid);
+        const p = progByUser.get(uid);
+        const sec = p?.watched_seconds || 0;
+        const atts = attsByUser.get(uid) || [];
+        const quizPct = atts.length ? atts.reduce((m, a) => Math.max(m, a.total ? Math.round((a.score/a.total)*100) : 0), 0) : 0;
+        return {
+          id: uid, name: u?.full_name || u?.email || '—', email: u?.email || '', empId: u?.employee_id || '—',
+          department: u?.department, subDepartment: u?.sub_department, managerName: u?.manager_name, managerEmail: u?.manager_email, managerContact: u?.manager_contact,
+          sec, pct: runtime ? Math.min(100, Math.round((sec / runtime) * 100)) : 0,
+          completed: !!p?.completed,
+          quizPct,
+          attempts: atts.length,
+        };
+      });
     out.sort((a, b) => b.sec - a.sec);
-    setRows(out);
+    const q = (search || '').toLowerCase().trim();
+    setRows(!q ? out : out.filter(r => `${r.name} ${r.email} ${r.empId}`.toLowerCase().includes(q)));
   };
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [lessonId, runtime, courseId]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [lessonId, runtime, courseId, allowedUserIds]);
   useEffect(() => {
+    // Use a unique channel name per mount to avoid StrictMode double-mount races
+    // that can reuse a previously-subscribed channel instance.
+    chNameRef.current = `per-lesson-${lessonId}-${Math.random().toString(36).slice(2)}`;
     const ch = supabase
-      .channel(`per-lesson-${lessonId}`)
+      .channel(chNameRef.current)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'lesson_progress', filter: `lesson_id=eq.${lessonId}` }, () => load())
       .subscribe();
     return () => { supabase.removeChannel(ch); };
@@ -415,14 +779,18 @@ function PerLessonWatch({ lessonId, runtime, courseId }: { lessonId: string; run
       <table style={{width:'100%', borderCollapse:'collapse'}}>
         <thead>
           <tr style={{background:'#FAFBFE'}}>
-            {['Employee','Watched','Of runtime','Status'].map(h => (
+            {['Employee','Emp ID','Watched','Of runtime','Quiz %','Attempts','Status'].map(h => (
               <th key={h} style={{padding:'10px 16px', textAlign:'left', fontSize:10, color:'#8A97A8', fontWeight:700, letterSpacing:'.08em', borderBottom:'1px solid #EEF2F7'}}>{h.toUpperCase()}</th>
             ))}
           </tr>
         </thead>
         <tbody>
           {rows.map(r => (
-            <tr key={r.id} style={{borderBottom:'1px solid #F7F9FC'}}>
+            <tr
+              key={r.id}
+              onClick={() => onOpenUser?.({ id: r.id, name: r.name, email: r.email, empId: r.empId, department: r.department, subDepartment: r.subDepartment, managerName: r.managerName, managerEmail: r.managerEmail, managerContact: r.managerContact, watchSec: r.sec, watchPct: r.pct, completion: r.completed ? 100 : 0, score: r.quizPct, attempts: r.attempts, status: r.completed ? 'active' : (r.sec > 0 ? 'at-risk' : 'inactive') })}
+              style={{borderBottom:'1px solid #F7F9FC', cursor: onOpenUser ? 'pointer' : 'default'}}
+            >
               <td style={{padding:'10px 16px'}}>
                 <div style={{display:'flex', alignItems:'center', gap:10}}>
                   <Avatar name={r.name} size={26}/>
@@ -432,8 +800,11 @@ function PerLessonWatch({ lessonId, runtime, courseId }: { lessonId: string; run
                   </div>
                 </div>
               </td>
+              <td style={{padding:'10px 16px'}}><code style={{fontSize:12, background:'#F7F9FC', padding:'3px 8px', borderRadius:6, color:'#0072FF', fontWeight:700}}>{r.empId}</code></td>
               <td style={{padding:'10px 16px', fontSize:13, fontWeight:700, color:'#002A4B'}}>{fmt(r.sec)}</td>
               <td style={{padding:'10px 16px', minWidth:200}}><ProgressBar value={r.pct} showLabel/></td>
+              <td style={{padding:'10px 16px', fontSize:12, fontWeight:800, color: r.quizPct>=70?'#17A674':r.quizPct>0?'#C2261D':'#8A97A8'}}>{r.quizPct>0?`${r.quizPct}%`:'—'}</td>
+              <td style={{padding:'10px 16px', fontSize:12, fontWeight:800, color:'#3B4A5E'}}>{r.attempts}</td>
               <td style={{padding:'10px 16px'}}>
                 <Chip color={r.completed?'#17A674':r.sec>0?'#E08A1E':'#8A97A8'}>{r.completed?'Completed':r.sec>0?'In progress':'Not started'}</Chip>
               </td>

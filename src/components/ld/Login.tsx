@@ -1,127 +1,96 @@
 import { useState } from "react";
-import { Btn, Field } from "./ui";
-import { useAuth } from "./auth";
+import { useAuth, ALLOWED_EMAIL_DOMAINS } from "./auth";
 
 export function Login() {
-  const { signIn, signUp } = useAuth();
-  const [mode, setMode] = useState<'login'|'signup'>('login');
-  const [email, setEmail] = useState('');
-  const [pw, setPw] = useState('');
-  const [empId, setEmpId] = useState('');
-  const [name, setName] = useState('');
-  const [loading, setLoading] = useState(false);
+  const { signInWithGoogle, signInWithMicrosoft, authError } = useAuth();
+  const [loading, setLoading] = useState<null | 'google' | 'microsoft'>(null);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
 
-  const submit = async () => {
-    setLoading(true); setError(null); setNotice(null);
-    if (mode === 'signup') {
-      if (!name.trim()) { setError('Please enter your name.'); setLoading(false); return; }
-      if (!empId.trim()) { setError('Employee ID is required.'); setLoading(false); return; }
-      const { error } = await signUp({
-        email: email.trim(), password: pw,
-        full_name: name.trim(), employee_id: empId.trim(),
-      });
-      if (error) setError(error);
-      else {
-        // Do not auto sign-in here; it can show confusing "confirm email" errors
-        // in projects where email confirmation is enabled.
-        setNotice('Account created successfully. Please sign in.');
-        setMode('login');
-      }
-    } else {
-      const { error } = await signIn(email.trim(), pw);
-      if (error) setError(error);
+  const handle = async (provider: 'google' | 'microsoft') => {
+    setError(null);
+    setLoading(provider);
+    const { error } = provider === 'google' ? await signInWithGoogle() : await signInWithMicrosoft();
+    if (error) {
+      setError(error);
+      setLoading(null);
     }
-    setLoading(false);
+    // On success, the OAuth redirect navigates away from the page.
   };
 
-  const isSignup = mode === 'signup';
+  const message = error || authError;
 
   return (
-    <div style={{minHeight:'100vh', display:'grid', gridTemplateColumns:'1.1fr 1fr', background:'#fff'}}>
-      {/* LEFT — hero / brand */}
-      <div style={{background:'#0A1F3D', position:'relative', overflow:'hidden', padding:'56px 64px', display:'flex', flexDirection:'column', justifyContent:'space-between', color:'#fff'}}>
-        <Blob top="-100px" right="-80px" size={380} c="#0072FF" o={.28}/>
-        <Blob bottom="-140px" left="-80px" size={320} c="#00C6FF" o={.18}/>
-        <div style={{position:'absolute', inset:0, backgroundImage:'radial-gradient(circle, rgba(255,255,255,.05) 1px, transparent 1px)', backgroundSize:'22px 22px', opacity:.4}}/>
-
-        <div style={{position:'relative', zIndex:1, display:'flex', alignItems:'center', gap:14}}>
-          <img src="/assets/nxtwave-white.svg" style={{height:30}} alt="NxtWave"/>
-          <div style={{width:1, height:22, background:'rgba(255,255,255,.25)'}}/>
-          <div style={{fontSize:13, fontWeight:600, letterSpacing:'.16em', color:'#9EC9F0', textTransform:'uppercase'}}>Learning Portal</div>
+    <div style={{minHeight:'100vh', display:'grid', placeItems:'center', background:'#fff', padding:'24px 16px'}}>
+      <div style={{width:'100%', maxWidth:420}}>
+        <div style={{display:'grid', placeItems:'center', marginBottom:18}}>
+          <img src="/assets/nxtwave-colored.svg" style={{height:36}} alt="NxtWave"/>
         </div>
 
-        <div style={{position:'relative', zIndex:1, maxWidth:480}}>
-          <h1 style={{fontSize:54, lineHeight:1.05, color:'#fff', margin:0, fontWeight:800, letterSpacing:'-.025em'}}>
-            Learn what matters.<br/>
-            <span style={{color:'#33B6FF'}}>Grow without limits.</span>
-          </h1>
-          <p style={{color:'#9EC9F0', fontSize:15, marginTop:18, lineHeight:1.55, maxWidth:440}}>
-            One portal for every course your team needs — from compliance to leadership — with tracked progress.
-          </p>
-        </div>
-
-        <div style={{position:'relative', zIndex:1, fontSize:12, color:'#7FDBFF', letterSpacing:'.06em'}}>NXTWAVE · LEARNING & DEVELOPMENT</div>
-      </div>
-
-      {/* RIGHT — form */}
-      <div style={{padding:'56px 72px', display:'flex', flexDirection:'column', justifyContent:'center'}}>
-        <div style={{maxWidth:400, width:'100%'}}>
-          <div style={{fontSize:11, fontWeight:700, color:'#8A97A8', letterSpacing:'.1em', textTransform:'uppercase', marginBottom:8}}>Welcome</div>
-          <h2 style={{fontSize:30, lineHeight:1.15, color:'#0A1F3D', letterSpacing:'-.02em', margin:0, fontWeight:800}}>
-            {isSignup ? 'Create your account' : 'Sign in to continue'}
-          </h2>
-          <p style={{color:'#5B6A7D', fontSize:14, marginTop:8}}>
-            {isSignup ? 'Use your work email to get started. All new accounts are learners by default.' : 'Use your work email and password.'}
-          </p>
-
-          <div style={{marginTop:20, display:'inline-flex', padding:3, background:'#F7F9FC', border:'1px solid #EEF2F7', borderRadius:10}}>
-            {([['login','Sign in'],['signup','Sign up']] as const).map(([k,l])=>(
-              <button key={k} onClick={()=>{setMode(k); setError(null);}} style={{padding:'7px 18px', fontSize:13, fontWeight:600, border:0, borderRadius:8, cursor:'pointer', background: mode===k?'#fff':'transparent', color: mode===k?'#002A4B':'#5B6A7D', boxShadow: mode===k?'0 1px 2px rgba(0,42,75,.08)':'none'}}>{l}</button>
-            ))}
+        <div style={{background:'#fff', border:'1px solid #EEF2F7', borderRadius:16, padding:'26px 22px', boxShadow:'0 10px 28px rgba(0,42,75,.06)'}}>
+          <div style={{textAlign:'center', marginBottom:20}}>
+            <div style={{fontSize:18, fontWeight:800, color:'#0A1F3D'}}>Sign in to NxtWave L&D</div>
+            <div style={{fontSize:13, color:'#5B6A7D', marginTop:6}}>
+              Use your {ALLOWED_EMAIL_DOMAINS.map(d => '@' + d).join(' or ')} account
+            </div>
           </div>
 
-          <div style={{marginTop:20, display:'flex', flexDirection:'column', gap:12}}>
-            {isSignup && <Field label="Full name" value={name} onChange={e=>setName(e.target.value)}/>}
-            <Field label="Work email" value={email} onChange={e=>setEmail(e.target.value)}/>
-            {isSignup && (
-              <Field label="Employee ID *" value={empId} onChange={e=>setEmpId(e.target.value.toUpperCase())} mono/>
-            )}
-            <Field label="Password" type="password" value={pw} onChange={e=>setPw(e.target.value)} hint={isSignup ? 'Min 6 characters' : undefined}/>
+          <div style={{display:'flex', flexDirection:'column', gap:12}}>
+            <button
+              onClick={() => handle('google')}
+              disabled={loading !== null}
+              style={{
+                display:'flex', alignItems:'center', justifyContent:'center', gap:10,
+                width:'100%', padding:'12px 16px', fontSize:14, fontWeight:700,
+                background:'#fff', color:'#3B4A5E',
+                border:'1px solid #DDE4ED', borderRadius:10,
+                cursor: loading ? 'not-allowed' : 'pointer',
+                opacity: loading && loading !== 'google' ? 0.55 : 1,
+                transition:'all .15s',
+              }}
+            >
+              <svg width="18" height="18" viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg">
+                <path d="M17.64 9.205c0-.639-.057-1.252-.164-1.841H9v3.481h4.844a4.14 4.14 0 0 1-1.796 2.716v2.259h2.908c1.702-1.567 2.684-3.875 2.684-6.615z" fill="#4285F4"/>
+                <path d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z" fill="#34A853"/>
+                <path d="M3.964 10.71A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.042l3.007-2.332z" fill="#FBBC05"/>
+                <path d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.958L3.964 7.29C4.672 5.163 6.656 3.58 9 3.58z" fill="#EA4335"/>
+              </svg>
+              {loading === 'google' ? 'Opening Google…' : 'Continue with Google'}
+            </button>
+
+            <button
+              onClick={() => handle('microsoft')}
+              disabled={loading !== null}
+              style={{
+                display:'flex', alignItems:'center', justifyContent:'center', gap:10,
+                width:'100%', padding:'12px 16px', fontSize:14, fontWeight:700,
+                background:'#fff', color:'#3B4A5E',
+                border:'1px solid #DDE4ED', borderRadius:10,
+                cursor: loading ? 'not-allowed' : 'pointer',
+                opacity: loading && loading !== 'microsoft' ? 0.55 : 1,
+                transition:'all .15s',
+              }}
+            >
+              <svg width="18" height="18" viewBox="0 0 21 21" xmlns="http://www.w3.org/2000/svg">
+                <rect x="1" y="1" width="9" height="9" fill="#F25022"/>
+                <rect x="11" y="1" width="9" height="9" fill="#7FBA00"/>
+                <rect x="1" y="11" width="9" height="9" fill="#00A4EF"/>
+                <rect x="11" y="11" width="9" height="9" fill="#FFB900"/>
+              </svg>
+              {loading === 'microsoft' ? 'Opening Microsoft…' : 'Continue with Microsoft'}
+            </button>
           </div>
 
-          {notice && (
-            <div style={{marginTop:14, padding:'10px 12px', background:'#E8F7EF', color:'#0F7C57', borderRadius:8, fontSize:13, fontWeight:500}}>{notice}</div>
-          )}
-
-          {error && (
-            <div style={{marginTop:14, padding:'10px 12px', background:'#FCE1DE', color:'#C2261D', borderRadius:8, fontSize:13, fontWeight:500}}>{error}</div>
-          )}
-
-          <div style={{marginTop:18}}>
-            <Btn full size="lg" onClick={submit} disabled={loading || !email || !pw || (isSignup && (!name.trim() || !empId.trim()))}>
-              {loading
-                ? <span style={{display:'inline-block', width:16, height:16, border:'2px solid rgba(255,255,255,.35)', borderTopColor:'#fff', borderRadius:99, animation:'spin .7s linear infinite'}}/>
-                : (isSignup ? 'Create account' : 'Sign in')}
-            </Btn>
-          </div>
-
-          {isSignup && (
-            <div style={{marginTop:16, fontSize:12, color:'#8A97A8', lineHeight:1.5}}>
-              Admin access is granted by an existing admin from the Admins page after you sign up.
+          {message && (
+            <div style={{marginTop:16, padding:'10px 12px', background:'#FCE1DE', color:'#C2261D', borderRadius:8, fontSize:13, fontWeight:500}}>
+              {message}
             </div>
           )}
+
+          <div style={{marginTop:18, fontSize:11, color:'#8A97A8', lineHeight:1.5, textAlign:'center'}}>
+            Only {ALLOWED_EMAIL_DOMAINS.map(d => '@' + d).join(' / ')} accounts are permitted. Other accounts will be signed out automatically.
+          </div>
         </div>
       </div>
     </div>
   );
-}
-
-function Stat({ v, l }: { v:string; l:string }) {
-  return <div><div style={{fontSize:22, fontWeight:800, color:'#fff', letterSpacing:'-.02em'}}>{v}</div><div>{l}</div></div>;
-}
-
-function Blob({ top, right, left, bottom, size, c, o }: { top?:string; right?:string; left?:string; bottom?:string; size:number; c:string; o:number }) {
-  return <div style={{position:'absolute', top, right, left, bottom, width:size, height:size, borderRadius:999, background:c, opacity:o, filter:'blur(80px)'}}/>;
 }
