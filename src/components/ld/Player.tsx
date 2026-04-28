@@ -144,6 +144,28 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
     return () => { window.removeEventListener('beforeunload', flush); flush(); };
   }, [user, lesson]);
 
+  // Auto-pause if learner switches tabs or windows. Forces full attention
+  // on the video — no playing in the background while another tab is focused.
+  useEffect(() => {
+    const pauseIfPlaying = (reason: string) => {
+      const v = videoRef.current;
+      if (!v || v.paused) return;
+      v.pause();
+      setShowNote(reason);
+      setTimeout(() => setShowNote(null), 2200);
+    };
+    const onVisibility = () => {
+      if (document.hidden) pauseIfPlaying('Video paused — return to this tab to keep watching.');
+    };
+    const onBlur = () => pauseIfPlaying('Video paused — switch back to this window to resume.');
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('blur', onBlur);
+    };
+  }, []);
+
   const startedRef = useRef(false);
   useEffect(() => { startedRef.current = false; }, [activeId]);
   const seekGuardRef = useRef(false);

@@ -89,24 +89,25 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
               <div style={{fontSize:48, fontWeight:700, letterSpacing:'-.03em', marginTop:4, lineHeight:1}}>{pct}%</div>
               <div style={{fontSize:13, color:pass?'#D9F4E6':'#C8DDF4', marginTop:6}}>{correct} of {questions.length} correct · {pass ? (nextLesson ? 'Next video unlocked' : 'Course complete') : '70% needed to pass'}</div>
             </div>
-            <div style={{padding:'20px 30px'}}>
-              <div style={{fontSize:13, fontWeight:700, color:'#0A1F3D', marginBottom:12}}>Question breakdown</div>
-              <div style={{display:'flex', flexDirection:'column', gap:4}}>
-                {questions.map((m, i) => {
-                  const right = answers[i] === m.correct;
-                  return (
-                    <div key={m.id} style={{display:'flex', gap:12, alignItems:'flex-start', padding:'10px 0', borderBottom: i<questions.length-1?'1px solid #F7F9FC':'none'}}>
-                      <div style={{width:22, height:22, borderRadius:99, background: right?'#D9F4E6':'#FCE1DE', color: right?'#17A674':'#C2261D', display:'grid', placeItems:'center', fontWeight:700, fontSize:11, flexShrink:0, marginTop:1}}>{right?'✓':'✕'}</div>
-                      <div style={{flex:1}}>
-                        <div style={{fontSize:13, fontWeight:600, color:'#0A1F3D'}}>Q{i+1} · {m.q}</div>
-                        <div style={{fontSize:12, color:'#5B6A7D', marginTop:2}}>
-                          Your answer: <b style={{color:right?'#17A674':'#C2261D'}}>{answers[i]!==null?String.fromCharCode(65+(answers[i] as number)):'—'}</b>
-                          {!right && <>  ·  Correct: <b style={{color:'#17A674'}}>{String.fromCharCode(65+m.correct)}</b></>}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
+            <div style={{padding:'30px 40px 32px'}}>
+              {/* Show only the final result + score; correct answers are intentionally
+                  hidden so retake attempts remain a real assessment. */}
+              <div style={{display:'flex', gap:16, alignItems:'stretch'}}>
+                <div style={{flex:1, padding:'18px 20px', background:'#F7F9FC', borderRadius:10, border:'1px solid #EEF2F7'}}>
+                  <div style={{fontSize:11, fontWeight:700, color:'#8A97A8', letterSpacing:'.08em', textTransform:'uppercase'}}>Result</div>
+                  <div style={{fontSize:22, fontWeight:800, color: pass?'#17A674':'#C2261D', marginTop:6}}>{pass ? 'Passed ✓' : 'Failed ✕'}</div>
+                </div>
+                <div style={{flex:1, padding:'18px 20px', background:'#F7F9FC', borderRadius:10, border:'1px solid #EEF2F7'}}>
+                  <div style={{fontSize:11, fontWeight:700, color:'#8A97A8', letterSpacing:'.08em', textTransform:'uppercase'}}>Marks</div>
+                  <div style={{fontSize:22, fontWeight:800, color:'#0A1F3D', marginTop:6}}>{correct} / {questions.length}</div>
+                </div>
+                <div style={{flex:1, padding:'18px 20px', background:'#F7F9FC', borderRadius:10, border:'1px solid #EEF2F7'}}>
+                  <div style={{fontSize:11, fontWeight:700, color:'#8A97A8', letterSpacing:'.08em', textTransform:'uppercase'}}>Score</div>
+                  <div style={{fontSize:22, fontWeight:800, color:'#0A1F3D', marginTop:6}}>{pct}%</div>
+                </div>
+              </div>
+              <div style={{marginTop:18, fontSize:12, color:'#5B6A7D'}}>
+                Correct answers are not displayed. {pass ? 'Great work — your completion is recorded.' : 'Rewatch the video and retry to improve your score.'}
               </div>
               <div style={{marginTop:22, display:'flex', gap:10}}>
                 {pass
