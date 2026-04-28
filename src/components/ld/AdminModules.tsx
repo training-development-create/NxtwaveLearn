@@ -242,11 +242,18 @@ function EditAssignmentModal({ course, onClose, onSaved }: { course: Course; onC
     if (!anyToAdd) return;
     setBusy(true); setErr(null);
     try {
+      // Use only the most specific selection level. Dept/subdept/manager are
+      // cascading UI filters — when employees are picked, only those matter.
       const rows: Record<string, unknown>[] = [];
-      addDeptIds.forEach(id => rows.push({ course_id: course.id, department_id: id }));
-      addSubDeptIds.forEach(id => rows.push({ course_id: course.id, sub_department_id: id }));
-      addManagerIds.forEach(id => rows.push({ course_id: course.id, manager_id: id }));
-      addEmployeeIds.forEach(id => rows.push({ course_id: course.id, employee_id: id }));
+      if (addEmployeeIds.length > 0) {
+        addEmployeeIds.forEach(id => rows.push({ course_id: course.id, employee_id: id }));
+      } else if (addManagerIds.length > 0) {
+        addManagerIds.forEach(id => rows.push({ course_id: course.id, manager_id: id }));
+      } else if (addSubDeptIds.length > 0) {
+        addSubDeptIds.forEach(id => rows.push({ course_id: course.id, sub_department_id: id }));
+      } else if (addDeptIds.length > 0) {
+        addDeptIds.forEach(id => rows.push({ course_id: course.id, department_id: id }));
+      }
       if (rows.length) {
         const { error } = await supabase.from('course_assignments').insert(rows);
         if (error) throw error;

@@ -189,6 +189,13 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
       employeesAll.forEach(e => out.add(e.id));
       return out;
     }
+    // When specific employees are selected, the dept/subdept/manager picks
+    // are just cascading UI filters — ONLY the checked employees matter.
+    if (assignEmployeeIds.length > 0) {
+      assignEmployeeIds.forEach(id => out.add(id));
+      return out;
+    }
+    // No specific employees — use the tree filter intersection.
     const usingTreeFilter = assignDeptIds.length > 0 || assignSubDeptIds.length > 0 || assignManagerIds.length > 0;
     if (usingTreeFilter) {
       employeesAll.forEach(e => {
@@ -198,8 +205,6 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
         out.add(e.id);
       });
     }
-    // Specific employees are additive — admin can include extras outside the tree filter.
-    assignEmployeeIds.forEach(id => out.add(id));
     return out;
   })();
   const previewEmployeeCount = resolvedEmployeeIds.size;
@@ -350,14 +355,18 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
           const usingEmp = assignEmployeeIds.length > 0;
           const treeLevels = (usingDept ? 1 : 0) + (usingSub ? 1 : 0) + (usingMgr ? 1 : 0);
 
-          if (treeLevels === 0 && usingEmp) {
+          if (usingEmp) {
+            // Specific employees selected → only assign to those people.
+            // Dept/subdept/manager are just cascading UI filters.
             assignEmployeeIds.forEach(id => rows.push({ course_id: courseId, employee_id: id }));
-          } else if (treeLevels === 1 && !usingEmp) {
-            if (usingDept) assignDeptIds.forEach(id => rows.push({ course_id: courseId, department_id: id }));
+          } else if (treeLevels === 1) {
+            // Single tree level, no specific employees → write a scope row
+            // so new joiners auto-enroll.
+            if (usingMgr) assignManagerIds.forEach(id => rows.push({ course_id: courseId, manager_id: id }));
             else if (usingSub) assignSubDeptIds.forEach(id => rows.push({ course_id: courseId, sub_department_id: id }));
-            else if (usingMgr) assignManagerIds.forEach(id => rows.push({ course_id: courseId, manager_id: id }));
+            else if (usingDept) assignDeptIds.forEach(id => rows.push({ course_id: courseId, department_id: id }));
           } else {
-            // Mixed scope → snapshot the intersection.
+            // Mixed tree scope, no specific employees → snapshot the intersection.
             resolvedEmployeeIds.forEach(id => rows.push({ course_id: courseId, employee_id: id }));
           }
         }
