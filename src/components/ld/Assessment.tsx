@@ -204,26 +204,13 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
                   <div style={{display:'flex', flexDirection:'column', gap:10}}>
                     {wrongIndices.map(i => {
                       const q = questions[i];
-                      const learnerIdx = answers[i];
+                      // We deliberately do NOT show the learner's answer or
+                      // the correct answer — only flag the question as wrong
+                      // so retake attempts remain a real assessment.
                       return (
                         <div key={q.id} style={{padding:'12px 14px', background:'#fff', border:'1px solid #FCE1DE', borderRadius:8}}>
-                          <div style={{fontSize:13, fontWeight:600, color:'#0A1F3D', marginBottom:8}}>Q{i+1}. {q.q}</div>
-                          <div style={{display:'flex', flexDirection:'column', gap:4, fontSize:12}}>
-                            <div style={{color:'#3B4A5E'}}>
-                              Your answer:&nbsp;
-                              <strong style={{color:'#C2261D'}}>
-                                {learnerIdx === null || learnerIdx === undefined
-                                  ? 'Skipped'
-                                  : `${String.fromCharCode(65 + (learnerIdx as number))}. ${q.options[learnerIdx as number]}`}
-                              </strong>
-                            </div>
-                            <div style={{color:'#3B4A5E'}}>
-                              Correct answer:&nbsp;
-                              <strong style={{color:'#17A674'}}>
-                                {String.fromCharCode(65 + q.correct)}. {q.options[q.correct]}
-                              </strong>
-                            </div>
-                          </div>
+                          <div style={{fontSize:13, fontWeight:600, color:'#0A1F3D', marginBottom:6}}>Q{i+1}. {q.q}</div>
+                          <div style={{fontSize:12, fontWeight:700, color:'#C2261D'}}>This question is wrong</div>
                         </div>
                       );
                     })}
