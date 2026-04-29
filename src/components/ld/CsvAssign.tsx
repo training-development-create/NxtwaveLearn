@@ -67,16 +67,56 @@ function parseCsv(text: string): string[][] {
   return rows;
 }
 
-export function CsvAssignModal({ courseId, courseTitle, onClose, onAssigned }: {
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+// Read a file as UTF-8 text while reporting progress (0..100). The native
+// file.text() does not surface progress events; FileReader does.
+function readFileWithProgress(file: File, onProgress: (pct: number) => void): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (typeof FileReader === 'undefined') {
+      file.text().then(t => { onProgress(100); resolve(t); }).catch(reject);
+      return;
+    }
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error || new Error('Failed to read file.'));
+    reader.onprogress = (e) => {
+      if (e.lengthComputable) onProgress(Math.min(99, Math.round((e.loaded / e.total) * 100)));
+    };
+    reader.onload = () => {
+      onProgress(100);
+      const result = reader.result;
+      if (typeof result === 'string') resolve(result);
+      else reject(new Error('Unexpected file content.'));
+    };
+    reader.readAsText(file, 'utf-8');
+  });
+}
+
+export type CsvMatchedEmployee = { id: string; email: string; name: string | null; auth_user_id: string | null };
+
+export function CsvAssignModal({ courseId, courseTitle, onClose, onAssigned, mode = 'immediate', onCollect }: {
   courseId: string;
   courseTitle?: string;
   onClose: () => void;
   onAssigned?: (count: number) => void;
+  // 'immediate' (default): write course_assignments + notifications on confirm.
+  //   Used by Edit Assignment modal and any flow with a real courseId already.
+  // 'collect': don't touch the DB — return matched employee rows via onCollect
+  //   so the parent can include them in a later atomic publish step. Used by
+  //   the new-course wizard (no courseId exists yet at that point).
+  mode?: 'immediate' | 'collect';
+  onCollect?: (matched: CsvMatchedEmployee[]) => void;
 }) {
   const [parsing, setParsing] = useState(false);
   const [parseError, setParseError] = useState<string | null>(null);
   const [bucket, setBucket] = useState<Bucket | null>(null);
   const [fileName, setFileName] = useState<string>('');
+  const [fileSize, setFileSize] = useState<number>(0);
+  const [readPct, setReadPct] = useState<number>(0);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [done, setDone] = useState<{ assigned: number; alreadyAssigned: number } | null>(null);
@@ -115,13 +155,37 @@ export function CsvAssignModal({ courseId, courseTitle, onClose, onAssigned }: {
   const handleFile = async (file: File | null) => {
     if (!file) return;
     setFileName(file.name);
+    setFileSize(file.size);
+    setReadPct(0);
     setParseError(null);
     setBucket(null);
     setDone(null);
     setSubmitError(null);
+
+    // Explicit file-type validation. The <input accept> attribute is only a
+    // hint — users on some platforms can still pick anything. Reject early
+    // with a friendly message rather than parsing garbage.
+    const lowerName = file.name.toLowerCase();
+    const okExt = lowerName.endsWith('.csv');
+    const okMime = !file.type || file.type === 'text/csv' || file.type === 'application/vnd.ms-excel' || file.type === 'application/csv';
+    if (!okExt || !okMime) {
+      setParseError('Please choose a .csv file (UTF-8 encoded). Spreadsheet apps like Excel/Google Sheets can export to CSV via "Download as".');
+      return;
+    }
+    // Soft cap to keep the UI responsive. The parser itself can handle more,
+    // but everything beyond a few thousand rows is better split into batches.
+    const MAX_BYTES = 10 * 1024 * 1024; // 10 MB
+    if (file.size > MAX_BYTES) {
+      setParseError(`File is too large (${formatBytes(file.size)}). Please split it into chunks under ${formatBytes(MAX_BYTES)}.`);
+      return;
+    }
+
     setParsing(true);
     try {
-      const text = await file.text();
+      // Stream-read with a FileReader so very large files show a real progress
+      // bar instead of locking up on file.text(). Falls back to file.text()
+      // if FileReader.readAsText is unavailable.
+      const text = await readFileWithProgress(file, p => setReadPct(p));
       const rows = parseCsv(text);
       if (rows.length === 0) throw new Error('CSV is empty.');
 
@@ -189,6 +253,31 @@ export function CsvAssignModal({ courseId, courseTitle, onClose, onAssigned }: {
     if (!bucket || bucket.matched.length === 0) return;
     setSubmitting(true);
     setSubmitError(null);
+
+    // ── COLLECT MODE ─────────────────────────────────────────────────
+    // The parent flow doesn't have a courseId yet (e.g. new-course wizard
+    // mid-publish). Hand back the matched employees and let the parent
+    // include them when it later creates course_assignments atomically.
+    if (mode === 'collect') {
+      try {
+        const matched: CsvMatchedEmployee[] = bucket.matched.map(m => ({
+          id: m.employee.id,
+          email: m.employee.email,
+          name: m.employee.name,
+          auth_user_id: m.employee.auth_user_id,
+        }));
+        onCollect?.(matched);
+        setDone({ assigned: matched.length, alreadyAssigned: 0 });
+        onAssigned?.(matched.length);
+      } catch (e) {
+        setSubmitError((e as Error).message || 'Failed to stage assignments.');
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
+
+    // ── IMMEDIATE MODE ───────────────────────────────────────────────
     try {
       // Find which matched employees are already assigned so we don't duplicate.
       const employeeIds = bucket.matched.map(m => m.employee.id);
@@ -257,7 +346,7 @@ export function CsvAssignModal({ courseId, courseTitle, onClose, onAssigned }: {
         <div style={{padding:'20px 26px 16px', borderBottom:'1px solid #EEF2F7', display:'flex', alignItems:'flex-start', gap:12}}>
           <div style={{flex:1}}>
             <div style={{fontSize:11, fontWeight:700, letterSpacing:'.12em', color:'#0072FF', textTransform:'uppercase'}}>Bulk assignment</div>
-            <div style={{fontSize:18, fontWeight:800, color:'#0A1F3D', marginTop:4, letterSpacing:'-.01em'}}>Upload CSV to assign learners</div>
+            <div style={{fontSize:18, fontWeight:800, color:'#0A1F3D', marginTop:4, letterSpacing:'-.01em'}}>Upload CSV &amp; Assign</div>
             <div style={{fontSize:12, color:'#5B6A7D', marginTop:4}}>
               Columns: <strong>Name, Email</strong> (required), <strong>Department</strong> (optional). We'll validate emails, remove duplicates, and only assign learners that exist in the employee directory.
             </div>
@@ -282,11 +371,22 @@ export function CsvAssignModal({ courseId, courseTitle, onClose, onAssigned }: {
                   />
                   <div style={{fontSize:24, marginBottom:6}}>{bucket ? '📊' : '📤'}</div>
                   <div style={{fontSize:13, fontWeight:700, color:'#0A1F3D'}}>
-                    {empLoading ? 'Loading employee directory…' : parsing ? 'Validating CSV…' : bucket ? `Loaded: ${fileName}` : 'Click to choose CSV file'}
+                    {empLoading
+                      ? 'Loading employee directory…'
+                      : parsing
+                        ? `Validating CSV… ${readPct}%`
+                        : bucket
+                          ? `Loaded: ${fileName}${fileSize ? ` (${formatBytes(fileSize)})` : ''}`
+                          : 'Click to choose CSV file'}
                   </div>
                   <div style={{fontSize:11, color:'#5B6A7D', marginTop:4}}>
-                    {bucket ? 'Click to upload a different file' : 'Up to a few thousand rows. UTF-8 encoded, CRLF or LF line endings.'}
+                    {bucket ? 'Click to upload a different file' : 'Up to ~10 MB / a few thousand rows. UTF-8 encoded, CRLF or LF line endings.'}
                   </div>
+                  {parsing && (
+                    <div style={{marginTop:10, height:4, background:'#EEF2F7', borderRadius:99, overflow:'hidden'}}>
+                      <div style={{width:`${readPct}%`, height:'100%', background:'linear-gradient(90deg,#00C6FF,#0072FF)', transition:'width .2s'}}/>
+                    </div>
+                  )}
                 </label>
               </Card>
               <div style={{marginTop:8, display:'flex', gap:10, alignItems:'center'}}>
@@ -406,11 +506,16 @@ export function CsvAssignModal({ courseId, courseTitle, onClose, onAssigned }: {
           {done && (
             <div style={{padding:'18px 0'}}>
               <div style={{fontSize:36, marginBottom:8}}>✅</div>
-              <div style={{fontSize:18, fontWeight:800, color:'#0A1F3D'}}>Assignments saved</div>
+              <div style={{fontSize:18, fontWeight:800, color:'#0A1F3D'}}>
+                {mode === 'collect' ? 'Learners staged' : 'Assignments saved'}
+              </div>
               <div style={{fontSize:13, color:'#5B6A7D', marginTop:6, lineHeight:1.55}}>
-                <strong>{done.assigned}</strong> learner{done.assigned === 1 ? '' : 's'} newly assigned.
+                <strong>{done.assigned}</strong> learner{done.assigned === 1 ? '' : 's'}
+                {mode === 'collect' ? ' staged for assignment.' : ' newly assigned.'}
                 {done.alreadyAssigned > 0 && <> {done.alreadyAssigned} already had this course.</>}
-                {' '}A notification has been sent to each new assignee.
+                {mode === 'collect'
+                  ? ' They will be assigned and notified when you click Publish.'
+                  : ' A notification has been sent to each new assignee.'}
               </div>
             </div>
           )}
@@ -423,7 +528,9 @@ export function CsvAssignModal({ courseId, courseTitle, onClose, onAssigned }: {
             <div style={{flex:1, fontSize:12, color:'#5B6A7D'}}>
               {bucket.matched.length === 0
                 ? 'Nothing to assign — at least one row needs to match the employee directory.'
-                : `Will assign ${bucket.matched.length} matched learner${bucket.matched.length === 1 ? '' : 's'}.`}
+                : mode === 'collect'
+                  ? `Will stage ${bucket.matched.length} matched learner${bucket.matched.length === 1 ? '' : 's'} for the publish step.`
+                  : `Will assign ${bucket.matched.length} matched learner${bucket.matched.length === 1 ? '' : 's'}.`}
             </div>
           )}
           {!bucket && !done && <div style={{flex:1}}/>}
@@ -436,7 +543,9 @@ export function CsvAssignModal({ courseId, courseTitle, onClose, onAssigned }: {
                 disabled={!bucket || bucket.matched.length === 0 || submitting}
                 onClick={confirmAssign}
               >
-                {submitting ? 'Assigning…' : 'Confirm & assign'}
+                {submitting
+                  ? (mode === 'collect' ? 'Staging…' : 'Assigning…')
+                  : (mode === 'collect' ? 'Stage for publish' : 'Confirm & assign')}
               </Btn>
             </>
           ) : (

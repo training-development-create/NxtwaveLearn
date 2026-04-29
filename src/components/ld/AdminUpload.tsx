@@ -3,7 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "./auth";
 import { Btn, Card, Chip, Icon } from "./ui";
 import type { Nav } from "./App";
-import { CsvAssignModal } from "./CsvAssign";
+import { CsvAssignModal, type CsvMatchedEmployee } from "./CsvAssign";
 
 const inputStyle: CSSProperties = { padding:'10px 12px', border:'1px solid #DDE4ED', borderRadius:8, fontSize:14, outline:'none', background:'#fff', fontFamily:'inherit' };
 
@@ -50,11 +50,17 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // CSV assignment modal — only available for "existing course" mode (we need
-  // a real course_id to write course_assignments rows against). For new
-  // courses, the admin should use the Edit Assignment modal in Modules
-  // after publishing.
+  // CSV bulk-assignment. Available in BOTH the new-course wizard and the
+  // existing-course flow.
+  //   • New course   → modal runs in 'collect' mode and stages matched
+  //                    employee IDs in `csvMatched`. They're written as
+  //                    course_assignments rows during publish() AFTER the
+  //                    course row has been created.
+  //   • Existing     → modal runs in 'collect' too, so we get a single
+  //                    atomic publish (avoids the prior race where the
+  //                    immediate write was wiped by publish()'s delete).
   const [csvOpen, setCsvOpen] = useState(false);
+  const [csvMatched, setCsvMatched] = useState<CsvMatchedEmployee[]>([]);
 
   // ----- Assignment picker state -----
   type Dept = { id: string; name: string };
@@ -182,7 +188,10 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
     || assignDeptIds.length > 0
     || assignSubDeptIds.length > 0
     || assignManagerIds.length > 0
-    || assignEmployeeIds.length > 0;
+    || assignEmployeeIds.length > 0
+    // CSV-staged learners count as a valid scope on their own — useful when
+    // the admin only wants to assign a hand-picked list via CSV upload.
+    || csvMatched.length > 0;
 
   // Resolve the assignment into the actual employee set using INTERSECTION
   // semantics for the org-tree filters: each more-specific level NARROWS the
@@ -350,9 +359,17 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
 
       // ----- Write course_assignments for the picker selections.
       // For new courses, we always write fresh rows. For existing courses we
-      // additionally clear prior assignments so the admin can re-target.
+      // additionally clear prior assignments so the admin can re-target —
+      // but ONLY when the picker scope was actually used. CSV-only updates
+      // are additive (no wipe) so the admin can append a hand-picked list
+      // without nuking existing org-tree scopes.
+      const pickerUsed = assignAll
+        || assignDeptIds.length > 0
+        || assignSubDeptIds.length > 0
+        || assignManagerIds.length > 0
+        || assignEmployeeIds.length > 0;
       if (mode === 'new' || (mode === 'existing' && assignmentValid)) {
-        if (mode === 'existing') {
+        if (mode === 'existing' && pickerUsed) {
           await supabase.from('course_assignments').delete().eq('course_id', courseId);
         }
         const rows: Record<string, unknown>[] = [];
@@ -403,6 +420,41 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
         if (rows.length) {
           const { error: e4 } = await supabase.from('course_assignments').insert(rows);
           if (e4) throw e4;
+        }
+
+        // ----- CSV-staged learners (in addition to picker scope) -----
+        // These are ALWAYS written as employee_id rows. We dedupe against
+        // anything already on the course (e.g. picker just inserted them as
+        // part of the resolved intersection) so we don't violate the unique
+        // constraint on (course_id, employee_id).
+        if (csvMatched.length > 0) {
+          const { data: already } = await supabase
+            .from('course_assignments')
+            .select('employee_id')
+            .eq('course_id', courseId)
+            .in('employee_id', csvMatched.map(m => m.id));
+          const alreadySet = new Set((already ?? []).map((r: { employee_id: string }) => r.employee_id));
+          const csvRows = csvMatched
+            .filter(m => !alreadySet.has(m.id))
+            .map(m => ({ course_id: courseId, employee_id: m.id }));
+          if (csvRows.length > 0) {
+            const { error: eCsv } = await supabase.from('course_assignments').insert(csvRows);
+            if (eCsv) throw eCsv;
+
+            // In-app notification for each newly-assigned CSV learner that
+            // has an auth user (so they get a real notification on login).
+            const csvNotifs = csvMatched
+              .filter(m => !alreadySet.has(m.id) && m.auth_user_id)
+              .map(m => ({
+                user_id: m.auth_user_id!,
+                title: 'New compliance course assigned',
+                body: `${courseTitle.trim() || 'A new compliance course'} — open the Compliance Portal to begin.`,
+                link_course_id: courseId,
+              }));
+            if (csvNotifs.length > 0) {
+              await supabase.from('notifications').insert(csvNotifs);
+            }
+          }
         }
 
         // Ensure enrollments are refreshed immediately even if DB triggers
@@ -673,28 +725,49 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
                     </div>
                   </div>
                 )}
-                {/* CSV bulk assignment — adds named learners on top of the picker scope.
-                    Available only when extending an existing course because we need a real
-                    course_id to write assignments against. */}
-                {mode === 'existing' && existingCourseId && (
-                  <div style={{marginBottom:14, padding:'12px 14px', background:'#F2F9FF', border:'1px solid #CCEAFF', borderRadius:10, display:'flex', alignItems:'center', gap:12}}>
-                    <div style={{fontSize:18}}>📥</div>
-                    <div style={{flex:1}}>
-                      <div style={{fontSize:13, fontWeight:700, color:'#0A1F3D'}}>Bulk-assign via CSV</div>
-                      <div style={{fontSize:11, color:'#5B6A7D', marginTop:2}}>Upload a Name / Email / Department CSV. We'll validate emails, dedupe, and only assign learners that exist in the directory.</div>
+                {/* CSV bulk assignment — adds named learners on top of (or instead of)
+                    the picker scope. Works for BOTH new and existing courses: in the
+                    new-course flow the modal stages matched employees and the
+                    course_assignments rows are written atomically during publish(). */}
+                <div style={{marginBottom:14, padding:'12px 14px', background:'#F2F9FF', border:'1px solid #CCEAFF', borderRadius:10, display:'flex', alignItems:'center', gap:12}}>
+                  <div style={{fontSize:18}}>📥</div>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:13, fontWeight:700, color:'#0A1F3D'}}>
+                      Bulk-assign via CSV
+                      {csvMatched.length > 0 && (
+                        <span style={{marginLeft:8, padding:'2px 8px', background:'#E8F7EF', color:'#0F7C57', fontSize:10, fontWeight:700, borderRadius:99}}>
+                          {csvMatched.length} staged
+                        </span>
+                      )}
                     </div>
-                    <Btn variant="ghost" size="sm" onClick={()=>setCsvOpen(true)}>Upload CSV</Btn>
+                    <div style={{fontSize:11, color:'#5B6A7D', marginTop:2}}>
+                      {csvMatched.length > 0
+                        ? 'These learners will be assigned and notified when you click Publish. Click below to replace or add more.'
+                        : 'Upload a Name / Email / Department CSV. Emails are validated, duplicates removed, and only learners in the directory are kept.'}
+                    </div>
                   </div>
-                )}
+                  {csvMatched.length > 0 && (
+                    <Btn variant="ghost" size="sm" onClick={()=>setCsvMatched([])}>Clear</Btn>
+                  )}
+                  <Btn variant="ghost" size="sm" onClick={()=>setCsvOpen(true)}>Upload CSV &amp; Assign</Btn>
+                </div>
                 {error && <div style={{padding:'10px 12px', background:'#FCE1DE', color:'#C2261D', borderRadius:8, fontSize:13, fontWeight:500, marginBottom:14}}>{error}</div>}
                 <div style={{display:'flex', gap:10}}>
                   <Btn variant="ghost" onClick={()=>setStep(3)}>← Back</Btn>
                   <Btn variant="success" size="lg" onClick={publish} disabled={saving || !assignmentValid}>{saving ? 'Publishing…' : 'Publish ✓'}</Btn>
                 </div>
-                {csvOpen && existingCourseId && (
+                {csvOpen && (
                   <CsvAssignModal
-                    courseId={existingCourseId}
-                    courseTitle={existingCourses.find(c => c.id === existingCourseId)?.title}
+                    // courseId is empty for the new-course flow — the modal then runs
+                    // in 'collect' mode and just hands back the matched employees.
+                    courseId={mode === 'existing' ? existingCourseId : ''}
+                    courseTitle={mode === 'existing'
+                      ? existingCourses.find(c => c.id === existingCourseId)?.title
+                      : courseTitle.trim() || undefined}
+                    mode="collect"
+                    onCollect={(matched)=>{
+                      setCsvMatched(matched);
+                    }}
                     onClose={()=>setCsvOpen(false)}
                   />
                 )}
