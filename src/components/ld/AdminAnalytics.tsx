@@ -9,6 +9,7 @@ type LearnerRow = {
   id: string; name: string; email: string; empId: string;
   department?: string | null;
   subDepartment?: string | null;
+  designation?: string | null;
   managerName?: string | null;
   managerEmail?: string | null;
   managerContact?: string | null;
@@ -80,6 +81,7 @@ export function AdminAnalytics() {
   const [detailUser, setDetailUser] = useState<LearnerRow | null>(null);
   // Department / manager analytics state.
   const [profilesAll, setProfilesAll] = useState<ProfileMini[]>([]);
+  const progArrRef = useRef<{ user_id: string; lesson_id: string; watched_seconds: number; completed: boolean }[]>([]);
   const [department, setDepartment] = useState<string>('all');
   const [subDepartment, setSubDepartment] = useState<string>('all');
   const [managerEmail, setManagerEmail] = useState<string>('all');
@@ -186,6 +188,7 @@ export function AdminAnalytics() {
     setProfilesAll(assignedProfiles);
     const profilesTyped: ProfileMini[] = assignedProfiles;
     const progArr = (prog || []) as { user_id: string; lesson_id: string; watched_seconds: number; completed: boolean }[];
+    progArrRef.current = progArr;
     const attArr = (attempts || []) as { user_id: string; lesson_id: string; score: number; total: number; passed: boolean }[];
 
     const totalWatchSec = progArr.reduce((s, p) => s + (p.watched_seconds || 0), 0);
@@ -229,52 +232,62 @@ export function AdminAnalytics() {
       const status = completion >= 70 ? 'active' : completion >= 30 ? 'at-risk' : 'overdue';
       return {
         id: uid, name: u.full_name || u.email, email: u.email, empId: u.employee_id || '—',
-        department: u.department, subDepartment: u.sub_department, managerName: u.manager_name, managerEmail: u.manager_email, managerContact: u.manager_contact,
+        department: u.department, subDepartment: u.sub_department, designation: u.designation_name,
+        managerName: u.manager_name, managerEmail: u.manager_email, managerContact: u.manager_contact,
         watchSec, watchPct, completion, score, attempts: userAtt.length, status,
       };
     }).filter(Boolean) as LearnerRow[];
     rows.sort((a, b) => b.watchSec - a.watchSec);
     setLearners(rows);
 
-    // -------- Department + Manager rollups (course-scoped) --------
-    // "Completed" only applies to signed-in users (only they have progress
-    // rows). Total counts every assigned employee — signed in or not — so
-    // an admin can see "60 assigned in HR, 12 completed" rather than
-    // "12 assigned, 12 completed" which is misleading.
+  }, [course, lessons]);
+
+  useEffect(() => {
+    loadStats();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [course, lessons]);
+
+  // Reactive Stats Rollups (Aggregated from allProfiles + filter state)
+  const stats = useMemo(() => {
     const isCourseComplete = (authId: string) =>
-      lessonIds.length > 0 && lessonIds.every(lid => progArr.some(p => p.user_id === authId && p.lesson_id === lid && p.completed));
+      lessonIds.length > 0 && lessonIds.every(lid => progArrRef.current.some(p => p.user_id === authId && p.lesson_id === lid && p.completed));
 
-    // Department stats (over assigned scope, includes not-signed-in)
-    const deptMap = new Map<string, { total: number; completed: number }>();
-    assignedProfiles.forEach(p => {
+    const dMap = new Map<string, { total: number; completed: number }>();
+    const mMap = new Map<string, { managerEmail: string; managerName: string; total: number; completed: number }>();
+
+    profilesAll.forEach(p => {
+      // Narrow stats by ALL OTHER active filters (Cascading Narrowing)
+      if (department !== 'all' && (p.department || 'Unassigned') !== department) return;
+      if (subDepartment !== 'all' && (p.sub_department || 'Unassigned') !== subDepartment) return;
+      if (designation !== 'all' && (p.designation_name || 'Unassigned') !== designation) return;
+      // Note: we don't narrow by managerEmail here because the manager table IS the manager breakdown
+
       const d = p.department || 'Unassigned';
-      const cur = deptMap.get(d) || { total: 0, completed: 0 };
-      cur.total += 1;
-      // Only count completion for users who've actually signed in (others can't have progress).
-      if (p.signed_in && isCourseComplete(p.id)) cur.completed += 1;
-      deptMap.set(d, cur);
-    });
-    const deptArr = Array.from(deptMap.entries())
-      .map(([department, v]) => ({ department, total: v.total, completed: v.completed, pct: v.total ? Math.round((v.completed / v.total) * 100) : 0 }))
-      .sort((a, b) => b.pct - a.pct || b.total - a.total);
-    setDepartmentStats(deptArr);
+      const curD = dMap.get(d) || { total: 0, completed: 0 };
+      curD.total++;
+      if (p.signed_in && isCourseComplete(p.id)) curD.completed++;
+      dMap.set(d, curD);
 
-    // Manager stats — keyed by email when available, fallback to name.
-    const mgrMap = new Map<string, { managerEmail: string; managerName: string; total: number; completed: number }>();
-    assignedProfiles.forEach(p => {
-      const key = p.manager_email || p.manager_name || 'Unassigned';
-      const cur = mgrMap.get(key) || { managerEmail: p.manager_email || '', managerName: p.manager_name || 'Unassigned', total: 0, completed: 0 };
-      cur.total += 1;
-      if (p.signed_in && isCourseComplete(p.id)) cur.completed += 1;
-      mgrMap.set(key, cur);
+      const mKey = p.manager_email || p.manager_name || 'Unassigned';
+      const curM = mMap.get(mKey) || { managerEmail: p.manager_email || '', managerName: p.manager_name || 'Unassigned', total: 0, completed: 0 };
+      curM.total++;
+      if (p.signed_in && isCourseComplete(p.id)) curM.completed++;
+      mMap.set(mKey, curM);
     });
-    const mgrArr: ManagerRow[] = Array.from(mgrMap.values())
+
+    const dStats = Array.from(dMap.entries())
+      .map(([dept, v]) => ({ department: dept, total: v.total, completed: v.completed, pct: v.total ? Math.round((v.completed / v.total) * 100) : 0 }))
+      .sort((a, b) => b.total - a.total);
+
+    const mStats = Array.from(mMap.values())
       .map(m => ({ ...m, pending: m.total - m.completed }))
-      .sort((a, b) => b.pending - a.pending || b.total - a.total);
-    setManagerStats(mgrArr);
-  };
+      .sort((a, b) => b.pending - a.pending);
 
-  useEffect(() => { loadStats(); /* eslint-disable-next-line */ }, [course, lessons]);
+    return { dStats, mStats };
+  }, [profilesAll, department, subDepartment, designation, lessonIds]);
+
+  const departmentStats = stats.dStats;
+  const managerStats = stats.mStats;
 
   // Live updates: refetch when watch progress / quiz attempts / enrollments change.
   useEffect(() => {

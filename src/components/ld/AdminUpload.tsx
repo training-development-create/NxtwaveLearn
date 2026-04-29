@@ -149,8 +149,7 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
           if (assignManagerIds.length && (!e.manager_id || !assignManagerIds.includes(e.manager_id))) return false;
           return true;
         })
-        .map(e => e.designation_name)
-        .filter((d): d is string => !!d)
+        .map(e => e.designation_name || 'Unassigned')
     )
   ).sort();
 
@@ -159,7 +158,7 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
     if (assignDeptIds.length && (!e.department_id || !assignDeptIds.includes(e.department_id))) return false;
     if (assignSubDeptIds.length && (!e.sub_department_id || !assignSubDeptIds.includes(e.sub_department_id))) return false;
     if (assignManagerIds.length && (!e.manager_id || !assignManagerIds.includes(e.manager_id))) return false;
-    if (assignDesignationNames.length && (!e.designation_name || !assignDesignationNames.includes(e.designation_name))) return false;
+    if (assignDesignationNames.length && !assignDesignationNames.includes(e.designation_name || 'Unassigned')) return false;
     return true;
   });
   useEffect(() => {

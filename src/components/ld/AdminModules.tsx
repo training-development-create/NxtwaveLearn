@@ -219,7 +219,7 @@ function EditAssignmentModal({ course, onClose, onSaved }: { course: Course; onC
     if (addDeptIds.length && (!e.department_id || !addDeptIds.includes(e.department_id))) return false;
     if (addSubDeptIds.length && (!e.sub_department_id || !addSubDeptIds.includes(e.sub_department_id))) return false;
     if (addManagerIds.length && (!e.manager_id || !addManagerIds.includes(e.manager_id))) return false;
-    if (addDesignationNames.length && (!e.designation_name || !addDesignationNames.includes(e.designation_name))) return false;
+    if (addDesignationNames.length && !addDesignationNames.includes(e.designation_name || 'Unassigned')) return false;
     return true;
   });
 
@@ -233,8 +233,7 @@ function EditAssignmentModal({ course, onClose, onSaved }: { course: Course; onC
           if (addManagerIds.length && (!e.manager_id || !addManagerIds.includes(e.manager_id))) return false;
           return true;
         })
-        .map(e => e.designation_name)
-        .filter((d): d is string => !!d)
+        .map(e => e.designation_name || 'Unassigned')
     )
   ).sort();
 
