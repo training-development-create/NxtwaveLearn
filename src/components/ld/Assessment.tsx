@@ -204,13 +204,13 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
                   <div style={{display:'flex', flexDirection:'column', gap:10}}>
                     {wrongIndices.map(i => {
                       const q = questions[i];
-                      // We deliberately do NOT show the learner's answer or
-                      // the correct answer — only flag the question as wrong
-                      // so retake attempts remain a real assessment.
+                      // List only the question text. We intentionally do NOT
+                      // show the learner's answer, the correct answer, or any
+                      // right/wrong indicator beyond the question being in
+                      // this list — so retake attempts remain a real test.
                       return (
-                        <div key={q.id} style={{padding:'12px 14px', background:'#fff', border:'1px solid #FCE1DE', borderRadius:8}}>
-                          <div style={{fontSize:13, fontWeight:600, color:'#0A1F3D', marginBottom:6}}>Q{i+1}. {q.q}</div>
-                          <div style={{fontSize:12, fontWeight:700, color:'#C2261D'}}>This question is wrong</div>
+                        <div key={q.id} style={{padding:'12px 14px', background:'#fff', border:'1px solid #FCE1DE', borderRadius:8, fontSize:13, fontWeight:600, color:'#0A1F3D'}}>
+                          Q{i+1}. {q.q}
                         </div>
                       );
                     })}
