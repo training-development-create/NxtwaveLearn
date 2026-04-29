@@ -21,6 +21,9 @@ export type Lesson = {
   position: number;
   video_url: string | null;
   video_path: string | null;
+  // Optional reading material — not gated, purely supplementary.
+  reading_material_path: string | null;
+  reading_material_name: string | null;
 };
 
 export type LessonProgress = {

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useMCQ, useCourseLessons, recordAttempt, saveLessonProgress } from "./queries";
 import { useAuth } from "./auth";
 import { supabase } from "@/integrations/supabase/client";
@@ -24,13 +24,42 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
   const [flagged, setFlagged] = useState<Set<number>>(new Set());
   const [submitting, setSubmitting] = useState(false);
 
+  // Persistence — quiz state survives tab refresh / tab switch.
+  // Key per (user, lesson). Cleared on submit so a retake starts fresh.
+  const persistKey = user && activeLessonId ? `assessment-state-${user.id}-${activeLessonId}` : null;
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    if (!persistKey || restoredRef.current) return;
+    try {
+      const raw = localStorage.getItem(persistKey);
+      if (!raw) return;
+      const saved = JSON.parse(raw) as { stage?: typeof stage; idx?: number; answers?: (number|null)[]; flagged?: number[] };
+      if (saved.stage) setStage(saved.stage);
+      if (typeof saved.idx === 'number') setIdx(saved.idx);
+      if (Array.isArray(saved.answers)) setAnswers(saved.answers);
+      if (Array.isArray(saved.flagged)) setFlagged(new Set(saved.flagged));
+    } catch { /* ignore corrupt state */ }
+    restoredRef.current = true;
+  }, [persistKey]);
+  useEffect(() => {
+    if (!persistKey || !restoredRef.current) return;
+    try {
+      localStorage.setItem(persistKey, JSON.stringify({ stage, idx, answers, flagged: Array.from(flagged) }));
+    } catch { /* quota or serialisation failure — ignore */ }
+  }, [persistKey, stage, idx, answers, flagged]);
+
   // The active question list — always the full quiz now. (Previously the
   // quiz supported a "retake wrong only" mode; the rule changed: any wrong
   // answer means the learner restarts the entire quiz.)
   const activeList: { question: typeof questions[number]; originalIdx: number }[] =
     questions.map((q, i) => ({ question: q, originalIdx: i }));
 
-  useEffect(() => { if (questions.length) setAnswers(Array(questions.length).fill(null)); }, [questions.length]);
+  useEffect(() => {
+    if (!questions.length) return;
+    // Only initialise if we don't already have a sized array (e.g. from
+    // restored localStorage state).
+    setAnswers(prev => prev.length === questions.length ? prev : Array(questions.length).fill(null));
+  }, [questions.length]);
   useEffect(() => {
     if (!state.course) return;
     supabase.from('courses').select('id, title, agreement_required, agreement_pdf_path').eq('id', state.course).maybeSingle().then(({ data }) => setCourse(data as typeof course));
@@ -131,6 +160,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
       // the learner re-attempts every question.
       setAnswers(Array(questions.length).fill(null));
       setIdx(0);
+      setFlagged(new Set());
       setStage('quiz');
     };
     const onNext = () => { if (nextLesson) { setState({ ...state, activeLesson: nextLesson.id }); onNav('player'); } else onNav('courses'); };
@@ -271,6 +301,10 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
     }
     setSubmitting(false);
     setStage('result');
+    // After a passing submit, clear persisted quiz state — there's nothing
+    // useful to restore once results are shown. Failed attempts keep the
+    // stored answers so the learner can review wrong answers after a refresh.
+    if (pass && persistKey) { try { localStorage.removeItem(persistKey); } catch { /* ignore */ } }
   };
 
   return (

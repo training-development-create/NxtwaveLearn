@@ -122,8 +122,10 @@ export function useCourseLessons(courseId: string | null | undefined, userId: st
     if (!courseId) { setLessons([]); setLoading(false); return; }
     setLoading(true);
     const { data: ls } = await supabase.from('lessons').select('*').eq('course_id', courseId).order('position', { ascending: true });
-    const arr: Lesson[] = (ls || []).map((l: { id: string; course_id: string; title: string; duration_seconds: number; position: number; video_url: string | null; video_path: string | null }) => ({
+    const arr: Lesson[] = (ls || []).map((l: { id: string; course_id: string; title: string; duration_seconds: number; position: number; video_url: string | null; video_path: string | null; reading_material_path?: string | null; reading_material_name?: string | null }) => ({
       id: l.id, course_id: l.course_id, title: l.title, duration: l.duration_seconds, position: l.position, video_url: l.video_url, video_path: l.video_path,
+      reading_material_path: l.reading_material_path ?? null,
+      reading_material_name: l.reading_material_name ?? null,
     }));
     setLessons(arr);
     if (userId && arr.length) {
@@ -216,4 +218,11 @@ export async function getVideoUrl(path: string | null) {
   // (Browser caching + signed URL means this does not increase DB load.)
   const { data } = await supabase.storage.from('course-videos').createSignedUrl(path, 60 * 60 * 6);
   return data?.signedUrl ?? null;
+}
+
+// Reading material lives in a public bucket — supplementary, not gated.
+export function getReadingMaterialUrl(path: string | null) {
+  if (!path) return null;
+  const { data } = supabase.storage.from('reading-materials').getPublicUrl(path);
+  return data?.publicUrl ?? null;
 }

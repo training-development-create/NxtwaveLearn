@@ -37,6 +37,30 @@ export function AgreementSign({ courseId, courseTitle, agreementPdfPath, fullNam
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const openedAtRef = useRef<number>(Date.now());
 
+  // Persist typedName / agreed / scrolledToBottom across tab switches & refreshes.
+  // Cleared by the parent (Assessment) on successful signing via onSigned.
+  const persistKey = user ? `agreement-state-${user.id}-${courseId}` : null;
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    if (!persistKey || restoredRef.current) return;
+    try {
+      const raw = localStorage.getItem(persistKey);
+      if (raw) {
+        const saved = JSON.parse(raw) as { typedName?: string; agreed?: boolean; scrolledToBottom?: boolean };
+        if (typeof saved.typedName === 'string' && saved.typedName) setTypedName(saved.typedName);
+        if (saved.agreed) setAgreed(true);
+        if (saved.scrolledToBottom) setScrolledToBottom(true);
+      }
+    } catch { /* ignore */ }
+    restoredRef.current = true;
+  }, [persistKey]);
+  useEffect(() => {
+    if (!persistKey || !restoredRef.current) return;
+    try {
+      localStorage.setItem(persistKey, JSON.stringify({ typedName, agreed, scrolledToBottom }));
+    } catch { /* ignore quota errors */ }
+  }, [persistKey, typedName, agreed, scrolledToBottom]);
+
   // Resolve a signed URL for the private agreements bucket.
   useEffect(() => {
     let cancelled = false;
@@ -73,6 +97,7 @@ export function AgreementSign({ courseId, courseTitle, agreementPdfPath, fullNam
         user_agent: typeof navigator !== 'undefined' ? navigator.userAgent : null,
       });
       if (error) throw error;
+      if (persistKey) { try { localStorage.removeItem(persistKey); } catch { /* ignore */ } }
       onSigned();
     } catch (e) {
       setErr((e as Error).message || 'Could not record signature.');

@@ -42,6 +42,8 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
   // Optional agreement PDF — when provided, learners must sign it after the
   // quiz before the course is marked complete.
   const [agreementFile, setAgreementFile] = useState<File | null>(null);
+  // Optional supplementary reading material — PDF/DOC/etc. Not gated by completion %.
+  const [readingFile, setReadingFile] = useState<File | null>(null);
 
   const [questions, setQuestions] = useState<Q[]>([]);
   const [parsing, setParsing] = useState(false);
@@ -323,9 +325,26 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
       const position = count ?? 0;
 
       const dur = videoDuration || 360;
+
+      // Optional reading material — uploaded to public 'reading-materials' bucket
+      // and stamped on the lesson row. Not gated, supplementary only.
+      let readingPath: string | null = null;
+      let readingName: string | null = null;
+      if (readingFile) {
+        const rExt = readingFile.name.split('.').pop() || 'pdf';
+        readingPath = `${courseId}/reading-${crypto.randomUUID()}.${rExt}`;
+        const { error: rUpErr } = await supabase.storage.from('reading-materials').upload(readingPath, readingFile, {
+          upsert: false,
+          contentType: readingFile.type || 'application/octet-stream',
+        });
+        if (rUpErr) throw rUpErr;
+        readingName = readingFile.name;
+      }
+
       const { data: lesson, error: e2 } = await supabase.from('lessons').insert({
         course_id: courseId, title: lessonTitle.trim(), duration_seconds: dur,
         video_path: path, position,
+        reading_material_path: readingPath, reading_material_name: readingName,
       }).select('id').single();
       if (e2) throw e2;
 
@@ -574,6 +593,30 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
                       </div>
                     )}
                   </label>
+                </div>
+
+                {/* Optional reading material — PDF/DOC/PPT etc. Not gated. */}
+                <div style={{gridColumn:'1 / -1'}}>
+                  <Label>Reading material <span style={{fontWeight:500, color:'#8A97A8'}}>(optional)</span></Label>
+                  <label style={{display:'block', padding:18, border:`2px dashed ${readingFile?'#17A674':'#FCD79B'}`, background: readingFile?'#F0FCF5':'#FFF8EA', borderRadius:10, cursor:'pointer', textAlign:'center'}}>
+                    <input type="file" accept=".pdf,.doc,.docx,.ppt,.pptx,.txt" style={{display:'none'}} onChange={e=>setReadingFile(e.target.files?.[0] || null)}/>
+                    {readingFile ? (
+                      <div>
+                        <div style={{fontSize:24, marginBottom:4}}>📘</div>
+                        <div style={{fontSize:13, fontWeight:700, color:'#0A1F3D'}}>{readingFile.name}</div>
+                        <div style={{fontSize:11, color:'#5B6A7D', marginTop:2}}>{(readingFile.size/1024).toFixed(0)} KB · click to change</div>
+                      </div>
+                    ) : (
+                      <div>
+                        <div style={{fontSize:24, marginBottom:4}}>📘</div>
+                        <div style={{fontSize:13, fontWeight:700, color:'#0A1F3D'}}>Add supplementary reading material</div>
+                        <div style={{fontSize:11, color:'#9A6708', marginTop:2}}>PDF, DOCX, PPTX or TXT. Optional — learners can read it any time, no completion impact.</div>
+                      </div>
+                    )}
+                  </label>
+                  {readingFile && (
+                    <button type="button" onClick={()=>setReadingFile(null)} style={{marginTop:8, padding:'4px 10px', background:'#fff', border:'1px solid #FCE1DE', color:'#C2261D', borderRadius:6, fontSize:11, fontWeight:600, cursor:'pointer'}}>Remove reading material</button>
+                  )}
                 </div>
               </div>
               <div style={{padding:'14px 24px', borderTop:'1px solid #EEF2F7', display:'flex', justifyContent:'space-between'}}>

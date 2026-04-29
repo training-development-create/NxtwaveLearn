@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { useCourseLessons, saveLessonProgress, getVideoUrl } from "./queries";
+import { useCourseLessons, saveLessonProgress, getVideoUrl, getReadingMaterialUrl } from "./queries";
 import { useAuth } from "./auth";
 import { supabase } from "@/integrations/supabase/client";
 import { Btn, Card, ProgressBar, Icon, EmptyState } from "./ui";
@@ -479,6 +479,27 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
             <Btn disabled={!unlocked} onClick={goToQuiz}>{unlocked ? 'Start assessment →' : 'Locked'}</Btn>
           </Card>
         </div>
+
+        {/* Optional reading material — supplementary, not gated by completion */}
+        {lesson.reading_material_path && (() => {
+          const url = getReadingMaterialUrl(lesson.reading_material_path);
+          if (!url) return null;
+          const label = lesson.reading_material_name || 'Reading material';
+          return (
+            <div style={{marginTop:12}}>
+              <Card pad={16} style={{display:'flex', alignItems:'center', gap:14, background:'#F7F9FC', borderColor:'#EEF2F7'}}>
+                <div style={{width:38, height:38, borderRadius:10, background:'#FFF6E6', color:'#9A6708', display:'grid', placeItems:'center', fontSize:18}}>📘</div>
+                <div style={{flex:1, minWidth:0}}>
+                  <div style={{fontSize:13, fontWeight:700, color:'#0A1F3D'}}>{label}</div>
+                  <div style={{fontSize:11, color:'#5B6A7D', marginTop:2}}>Optional reading — not required to complete this lesson.</div>
+                </div>
+                <a href={url} target="_blank" rel="noreferrer" style={{textDecoration:'none'}}>
+                  <Btn variant="ghost" size="sm">Open ↗</Btn>
+                </a>
+              </Card>
+            </div>
+          );
+        })()}
       </div>
 
       <div>
@@ -514,6 +535,43 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
                 </div>
               );
             })}
+            {/* Agreement entry — appears once all lessons have a passing attempt
+                AND the course requires an agreement AND the learner hasn't
+                signed yet. Hidden after signing. */}
+            {(() => {
+              if (!agreementGate) return null;
+              if (hasSignedAgreement) return null;
+              const allLessonsPassed = lessons.length > 0 && lessons.every(l => (attemptsByLesson[l.id] || []).some(a => a.passed));
+              const agreementUnlocked = allLessonsPassed;
+              const goSign = () => {
+                if (!agreementUnlocked) {
+                  setShowNote('Pass the assessment first to unlock the agreement.');
+                  setTimeout(() => setShowNote(null), 2200);
+                  return;
+                }
+                // Route through assessment → agreement stage by activating the
+                // last lesson and navigating to assessment, which renders the
+                // AgreementSign view when needsSignature is true.
+                const last = lessons[lessons.length - 1];
+                if (last) {
+                  setState({ ...state, course: course.id, activeLesson: last.id });
+                  onNav('assessment');
+                }
+              };
+              return (
+                <div onClick={goSign} style={{padding:'12px 16px', borderBottom:'1px solid #F7F9FC', cursor: agreementUnlocked?'pointer':'not-allowed', background:'transparent', opacity: agreementUnlocked?1:.55, display:'flex', gap:12, alignItems:'flex-start'}}>
+                  <div style={{width:26, height:26, borderRadius:99, background: agreementUnlocked?'#0072FF':'#EEF2F7', color: agreementUnlocked?'#fff':'#5B6A7D', display:'grid', placeItems:'center', fontSize:11, fontWeight:700, flexShrink:0}}>
+                    {agreementUnlocked ? '✍️' : '🔒'}
+                  </div>
+                  <div style={{flex:1, minWidth:0}}>
+                    <div style={{fontSize:13, fontWeight:700, color:'#0A1F3D'}}>Sign agreement</div>
+                    <div style={{fontSize:11, color:'#8A97A8', marginTop:2}}>
+                      {agreementUnlocked ? 'Read & sign to complete the course' : 'Unlocks after passing the assessment'}
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         </Card>
       </div>
@@ -525,101 +583,37 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
 // Compliance UI helpers
 // =============================================================================
 
-// 3-step compliance wizard shown the first time a learner opens a course.
-// Step 1 = Video Rule, Step 2 = Assessment Rule, Step 3 = Document Rule
-// (Step 3 is skipped when the course doesn't require an agreement signature.)
+// Single-popup compliance acknowledgement shown the first time a learner opens a course.
+// Lists all 3 rules in one panel — Video Rule, Assessment Rule, and (optionally) Document Rule.
 function ComplianceWizardModal({ courseTitle, agreementRequired, onAcknowledge }: { courseTitle: string; agreementRequired: boolean; onAcknowledge: () => void }) {
-  type Step = { tag: string; title: string; rules: { icon: string; text: string }[] };
-  const allSteps: Step[] = [
-    {
-      tag: 'Step 1 — Video Rule',
-      title: 'Watch the entire video',
-      rules: [
-        { icon: '🎬', text: 'You must watch the full video — no fast-forwarding or skipping ahead.' },
-        { icon: '🖱️', text: 'Clicking anywhere inside the video will pause it.' },
-        { icon: '🛑', text: 'Switching tabs, windows, or minimising will pause the video automatically.' },
-        { icon: '⌨️', text: 'Keyboard skip shortcuts (arrow keys, J/L, number keys) are disabled.' },
-      ],
-    },
-    {
-      tag: 'Step 2 — Assessment Rule',
-      title: 'Score 100% on the assessment',
-      rules: [
-        { icon: '🎯', text: 'You must score 100% to pass the assessment.' },
-        { icon: '🔁', text: 'Even one wrong answer means the entire assessment restarts from the beginning.' },
-        { icon: '🙈', text: 'Correct answers will not be revealed — review the video carefully before retrying.' },
-      ],
-    },
+  const steps: { tag: string; text: string }[] = [
+    { tag: 'Step 1 — Video Rule', text: 'You must watch the entire compliance training video without skipping or tab switching.' },
+    { tag: 'Step 2 — Assessment Rule', text: 'Compliance assessment requires 100% correct answers. If any answer is wrong, the assessment restarts.' },
   ];
   if (agreementRequired) {
-    allSteps.push({
-      tag: 'Step 3 — Document Rule',
-      title: 'Read & sign the agreement',
-      rules: [
-        { icon: '📄', text: 'You must read the entire agreement document before signing.' },
-        { icon: '✍️', text: 'The course will not be marked complete until your signature is on file.' },
-      ],
-    });
+    steps.push({ tag: 'Step 3 — Document Rule', text: 'You must read the complete compliance document before signing.' });
   }
-
-  const [stepIdx, setStepIdx] = useState(0);
-  const total = allSteps.length;
-  const isLast = stepIdx === total - 1;
-  const step = allSteps[stepIdx];
 
   return (
     <div style={{position:'fixed', inset:0, background:'rgba(10,31,61,.6)', zIndex:2000, display:'grid', placeItems:'center', padding:24}}>
-      <div style={{background:'#fff', borderRadius:14, maxWidth:540, width:'100%', overflow:'hidden', boxShadow:'0 20px 60px rgba(0,0,0,.3)'}}>
+      <div style={{background:'#fff', borderRadius:14, maxWidth:560, width:'100%', overflow:'hidden', boxShadow:'0 20px 60px rgba(0,0,0,.3)'}}>
         <div style={{padding:'24px 28px 20px', background:'linear-gradient(135deg,#0A1F3D,#0072FF)', color:'#fff'}}>
-          <div style={{fontSize:11, fontWeight:700, letterSpacing:'.12em', color:'#9EC9F0', textTransform:'uppercase'}}>{step.tag}</div>
-          <div style={{fontSize:18, fontWeight:800, marginTop:6, letterSpacing:'-.01em'}}>{step.title}</div>
+          <div style={{fontSize:11, fontWeight:700, letterSpacing:'.12em', color:'#9EC9F0', textTransform:'uppercase'}}>Compliance Rules</div>
+          <div style={{fontSize:18, fontWeight:800, marginTop:6, letterSpacing:'-.01em'}}>Before you begin</div>
           <div style={{fontSize:12, color:'#C8DDF4', marginTop:6}}>{courseTitle}</div>
         </div>
 
-        <div style={{padding:'22px 28px 8px'}}>
-          <ul style={{margin:0, padding:0, listStyle:'none', display:'flex', flexDirection:'column', gap:12}}>
-            {step.rules.map((r, i) => (
-              <li key={i} style={{display:'flex', gap:12, fontSize:13, color:'#3B4A5E', lineHeight:1.5}}>
-                <span style={{fontSize:16, flexShrink:0}}>{r.icon}</span>
-                <span>{r.text}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-
-        {/* Progress dots */}
-        <div style={{display:'flex', justifyContent:'center', gap:8, padding:'16px 28px 4px'}}>
-          {allSteps.map((_, i) => (
-            <span
-              key={i}
-              style={{
-                width: i === stepIdx ? 22 : 8,
-                height: 8,
-                borderRadius: 99,
-                background: i === stepIdx ? '#0072FF' : i < stepIdx ? '#9EC9F0' : '#EEF2F7',
-                transition: 'all .25s',
-              }}
-            />
+        <div style={{padding:'22px 28px 8px', display:'flex', flexDirection:'column', gap:16}}>
+          {steps.map((s) => (
+            <div key={s.tag}>
+              <div style={{fontSize:11, fontWeight:700, letterSpacing:'.08em', color:'#0072FF', textTransform:'uppercase', marginBottom:6}}>{s.tag}</div>
+              <div style={{fontSize:14, color:'#0A1F3D', lineHeight:1.55}}>{s.text}</div>
+            </div>
           ))}
         </div>
 
-        <div style={{padding:'14px 28px 22px', display:'flex', alignItems:'center', gap:10}}>
-          <Btn
-            variant="ghost"
-            size="lg"
-            disabled={stepIdx === 0}
-            onClick={() => setStepIdx((s) => Math.max(0, s - 1))}
-          >
-            ← Back
-          </Btn>
-          <div style={{flex:1, fontSize:11, color:'#8A97A8', fontWeight:600, textAlign:'center'}}>
-            {stepIdx + 1} of {total}
-          </div>
-          {isLast ? (
-            <Btn size="lg" onClick={onAcknowledge}>I Understand</Btn>
-          ) : (
-            <Btn size="lg" onClick={() => setStepIdx((s) => Math.min(total - 1, s + 1))}>Next →</Btn>
-          )}
+        <div style={{padding:'18px 28px 22px', display:'flex', justifyContent:'flex-end'}}>
+          <Btn size="lg" onClick={onAcknowledge}>I Understand</Btn>
         </div>
       </div>
     </div>
