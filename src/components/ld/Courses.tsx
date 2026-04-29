@@ -15,6 +15,11 @@ export function Courses({ onNav, initialQuery }: { onNav: Nav; initialQuery?: st
   const norm = (s: string) => s.toLowerCase().trim();
   const query = norm(q);
   const isInProgress = (c: CourseWithProgress) => (c.started || c.progress > 0) && c.progress < 100;
+  // The course is "blocked on signing" when video + quiz are done (progress=100
+  // would be there if not for the agreement gate) but they haven't signed yet.
+  // We detect by: agreement_required, not signed, and meaningful progress made.
+  const isAwaitingSignature = (c: CourseWithProgress) =>
+    c.agreement_required && !c.agreement_signed && c.started;
   const enrolled = courses.filter(c => c.enrolled);
   const filtered = enrolled.filter(c => {
     if (!query) return true;
@@ -50,7 +55,8 @@ export function Courses({ onNav, initialQuery }: { onNav: Nav; initialQuery?: st
                   <Chip color="#fff" bg="rgba(255,255,255,.2)" style={{border:'1px solid rgba(255,255,255,.3)'}}>{c.tag}</Chip>
                 </div>
                 {c.progress===100 && <div style={{position:'absolute', top:12, right:12, background:'rgba(255,255,255,.95)', color:'#17A674', fontSize:11, fontWeight:700, padding:'3px 9px', borderRadius:999}}>Completed</div>}
-                {c.progress<100 && isInProgress(c) && <div style={{position:'absolute', top:12, right:12, background:'rgba(255,255,255,.95)', color:'#0072FF', fontSize:11, fontWeight:700, padding:'3px 9px', borderRadius:999}}>In progress</div>}
+                {c.progress<100 && isInProgress(c) && !isAwaitingSignature(c) && <div style={{position:'absolute', top:12, right:12, background:'rgba(255,255,255,.95)', color:'#0072FF', fontSize:11, fontWeight:700, padding:'3px 9px', borderRadius:999}}>In progress</div>}
+                {c.progress<100 && isAwaitingSignature(c) && <div style={{position:'absolute', top:12, right:12, background:'rgba(255,255,255,.95)', color:'#9A6708', fontSize:11, fontWeight:700, padding:'3px 9px', borderRadius:999}} title="Sign the course agreement to mark this course complete.">⚠ Agreement signing incomplete</div>}
               </div>
               <div style={{padding:16}}>
                 <div style={{fontSize:15, fontWeight:700, color:'#0A1F3D', letterSpacing:'-.01em'}}>{c.title}</div>

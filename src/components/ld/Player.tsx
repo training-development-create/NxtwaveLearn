@@ -349,6 +349,21 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
           completed={stepCompleted}
         />
 
+        {/* Compliance reminder: video + quiz done but agreement still unsigned.
+            The course is NOT marked completed in this state. */}
+        {agreementGate && stepVideoDone && stepQuizDone && !stepAgreementDone && (
+          <div style={{marginBottom:14, padding:'12px 16px', background:'#FFF6E6', border:'1px solid #FCD79B', borderRadius:10, display:'flex', alignItems:'center', gap:12}}>
+            <div style={{fontSize:18}}>⚠️</div>
+            <div style={{flex:1}}>
+              <div style={{fontSize:13, fontWeight:700, color:'#9A6708'}}>Agreement signing — incomplete</div>
+              <div style={{fontSize:12, color:'#9A6708', marginTop:2}}>
+                You've watched the video and passed the quiz, but the course will not be marked complete until you sign the agreement.
+              </div>
+            </div>
+            <Btn size="sm" onClick={() => onNav('assessment')}>Sign agreement</Btn>
+          </div>
+        )}
+
 
         <div ref={frameRef} style={{position:'relative', background:'#0A1F3D', borderRadius:16, overflow:'hidden', aspectRatio:'16/9', boxShadow:'0 12px 32px rgba(0,42,75,.15)'}}>
           {videoSrc ? (

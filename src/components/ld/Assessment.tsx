@@ -102,8 +102,14 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
         courseTitle={course.title}
         agreementPdfPath={course.agreement_pdf_path}
         fullName={profile?.full_name || ''}
-        onSigned={() => {
+        onSigned={async () => {
           setHasSignedAgreement(true);
+          // Now that the signature is in, the lesson is officially complete.
+          // (We deliberately deferred this from quiz submit when the course
+          // required an agreement.)
+          if (user && lesson) {
+            await saveLessonProgress(user.id, lesson.id, lesson.duration, true);
+          }
           if (nextLesson) { setState({ ...state, activeLesson: nextLesson.id }); onNav('player'); }
           else { onNav('courses'); }
         }}
@@ -156,10 +162,44 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
                 </div>
               </div>
               <div style={{marginTop:18, fontSize:12, color:'#5B6A7D'}}>
-                Correct answers are not displayed. {pass
+                {pass
                   ? 'Great work — your completion is recorded.'
-                  : `You answered ${wrongIndices.length} question${wrongIndices.length === 1 ? '' : 's'} incorrectly. Restart the entire quiz from the beginning to try again — every question must be correct.`}
+                  : `You answered ${wrongIndices.length} question${wrongIndices.length === 1 ? '' : 's'} incorrectly. Review them below, then restart the entire quiz from the beginning — every question must be correct to pass.`}
               </div>
+              {!pass && wrongIndices.length > 0 && (
+                <div style={{marginTop:22, padding:'18px 20px', background:'#FFF7F6', border:'1px solid #FCE1DE', borderRadius:10}}>
+                  <div style={{fontSize:11, fontWeight:700, color:'#C2261D', letterSpacing:'.08em', textTransform:'uppercase', marginBottom:10}}>
+                    Review · {wrongIndices.length} incorrect answer{wrongIndices.length === 1 ? '' : 's'}
+                  </div>
+                  <div style={{display:'flex', flexDirection:'column', gap:10}}>
+                    {wrongIndices.map(i => {
+                      const q = questions[i];
+                      const learnerIdx = answers[i];
+                      return (
+                        <div key={q.id} style={{padding:'12px 14px', background:'#fff', border:'1px solid #FCE1DE', borderRadius:8}}>
+                          <div style={{fontSize:13, fontWeight:600, color:'#0A1F3D', marginBottom:8}}>Q{i+1}. {q.q}</div>
+                          <div style={{display:'flex', flexDirection:'column', gap:4, fontSize:12}}>
+                            <div style={{color:'#3B4A5E'}}>
+                              Your answer:&nbsp;
+                              <strong style={{color:'#C2261D'}}>
+                                {learnerIdx === null || learnerIdx === undefined
+                                  ? 'Skipped'
+                                  : `${String.fromCharCode(65 + (learnerIdx as number))}. ${q.options[learnerIdx as number]}`}
+                              </strong>
+                            </div>
+                            <div style={{color:'#3B4A5E'}}>
+                              Correct answer:&nbsp;
+                              <strong style={{color:'#17A674'}}>
+                                {String.fromCharCode(65 + q.correct)}. {q.options[q.correct]}
+                              </strong>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
               <div style={{marginTop:22, display:'flex', gap:10, flexWrap:'wrap'}}>
                 {pass ? (
                   // Compliance gate: if the course requires an agreement and
@@ -211,15 +251,23 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
   const submit = async () => {
     if (!user || !lesson) return;
     setSubmitting(true);
-    // Score is always against the FULL question list (correct answers from
-    // earlier rounds carry forward — that's the whole point of retake-wrong).
     const correct = answers.filter((a, i) => a === questions[i].correct).length;
     const pct = Math.round((correct / questions.length) * 100);
     // 100% required.
     const pass = pct === 100;
     await recordAttempt(user.id, lesson.id, answers as number[], correct, questions.length, pass);
     if (pass) {
-      await saveLessonProgress(user.id, lesson.id, lesson.duration, true);
+      // Compliance gate: if the course requires an agreement and the learner
+      // hasn't signed yet, the lesson is NOT yet completed. The agreement
+      // signing flow will mark completion. This prevents agreement-required
+      // courses from showing "completed" until signing is done.
+      const needsSignature = !!course?.agreement_required && !!course?.agreement_pdf_path && !hasSignedAgreement;
+      if (!needsSignature) {
+        await saveLessonProgress(user.id, lesson.id, lesson.duration, true);
+      } else {
+        // Record the watch progress but leave completed=false until signing.
+        await saveLessonProgress(user.id, lesson.id, lesson.duration, false);
+      }
     }
     setSubmitting(false);
     setStage('result');

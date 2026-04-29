@@ -6,6 +6,7 @@ import type { Course, Lesson, MCQItem, CourseWithProgress, LessonProgress } from
 type CourseRow = {
   id: string; title: string; tag: string; blurb: string; instructor: string;
   hue: string; emoji: string; duration_label: string; due_in: string | null;
+  agreement_required?: boolean | null;
 };
 
 const toCourse = (r: CourseRow): Course => ({
@@ -41,12 +42,15 @@ export function useUserCourses(userId: string | null) {
   const load = useCallback(async () => {
     if (!userId) { setItems([]); setLoading(false); return; }
     setLoading(true);
-    const [{ data: courses }, { data: lessons }, { data: progress }, { data: enrolls }] = await Promise.all([
+    const [{ data: courses }, { data: lessons }, { data: progress }, { data: enrolls }, { data: signedSigs }] = await Promise.all([
       supabase.from('courses').select('*').order('created_at', { ascending: true }),
       supabase.from('lessons').select('id, course_id, duration_seconds'),
       supabase.from('lesson_progress').select('lesson_id, completed, watched_seconds').eq('user_id', userId),
       supabase.from('enrollments').select('course_id').eq('user_id', userId),
+      // Compliance: which courses has this user signed the agreement for?
+      supabase.from('agreement_signatures').select('course_id').eq('user_id', userId),
     ]);
+    const signedCourseIds = new Set(((signedSigs || []) as { course_id: string }[]).map(s => s.course_id));
     const lessonByCourse = new Map<string, { id: string; duration: number }[]>();
     (lessons || []).forEach((l: { id: string; course_id: string; duration_seconds: number }) => {
       const arr = lessonByCourse.get(l.course_id) || [];
@@ -72,7 +76,16 @@ export function useUserCourses(userId: string | null) {
         return sum + lessonProgressRatio(l.duration, p?.watched_seconds || 0, !!p?.completed);
       }, 0);
       const progressPct = total ? Math.round((weighted / total) * 100) : 0;
-      return { ...toCourse(c), lessons_total: total, lessons_done: done, progress: progressPct, enrolled: enrolledIds.has(c.id), started };
+      return {
+        ...toCourse(c),
+        lessons_total: total,
+        lessons_done: done,
+        progress: progressPct,
+        enrolled: enrolledIds.has(c.id),
+        started,
+        agreement_required: !!c.agreement_required,
+        agreement_signed: signedCourseIds.has(c.id),
+      };
     });
     setItems(out);
     setLoading(false);
@@ -91,6 +104,7 @@ export function useUserCourses(userId: string | null) {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'lesson_progress', filter: `user_id=eq.${userId}` }, schedule)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'enrollments', filter: `user_id=eq.${userId}` }, schedule)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'quiz_attempts', filter: `user_id=eq.${userId}` }, schedule)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'agreement_signatures', filter: `user_id=eq.${userId}` }, schedule)
       .subscribe();
     return () => { if (timer) clearTimeout(timer); supabase.removeChannel(ch); };
   }, [userId, load]);

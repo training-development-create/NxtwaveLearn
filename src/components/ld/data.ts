@@ -43,6 +43,9 @@ export type CourseWithProgress = Course & {
   progress: number; // 0..100
   enrolled: boolean;
   started: boolean; // user has watched at least some of any lesson in this course
+  // Compliance — agreement signing
+  agreement_required: boolean;
+  agreement_signed: boolean;
 };
 
 export const fmt = (s: number) => `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`;
