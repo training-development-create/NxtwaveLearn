@@ -8,7 +8,7 @@ type Course = { id: string; title: string; tag: string; emoji: string; published
 type Lesson = { id: string; title: string; course_id: string; duration_seconds: number; video_path: string | null };
 type Dept = { id: string; name: string };
 type SubDept = { id: string; name: string; department_id: string };
-type EmpOpt = { id: string; name: string; email: string; department_id: string | null; sub_department_id: string | null; manager_id: string | null; designation_name: string | null; is_manager: boolean };
+type EmpOpt = { id: string; name: string; email: string; department_id: string | null; sub_department_id: string | null; manager_id: string | null; is_manager: boolean };
 type Assignment = {
   id: string;
   scope_all: boolean;
@@ -151,7 +151,7 @@ function EditAssignmentModal({ course, onClose, onSaved }: { course: Course; onC
         for (let from = 0; ; from += page) {
           const { data, error } = await supabase
             .from('employees')
-            .select('id, name, email, department_id, sub_department_id, manager_id, designation_name, status')
+            .select('id, name, email, department_id, sub_department_id, manager_id, status')
             .eq('status', 'active').order('name').range(from, from + page - 1);
           if (error) { console.warn('[modules] paging stop:', error.message); break; }
           if (!data || data.length === 0) break;
@@ -172,7 +172,7 @@ function EditAssignmentModal({ course, onClose, onSaved }: { course: Course; onC
       setSubDepartments((s || []) as SubDept[]);
       const reportCounts = new Map<string, number>();
       allEmps.forEach(e => { if (e.manager_id) reportCounts.set(e.manager_id, (reportCounts.get(e.manager_id) ?? 0) + 1); });
-      setEmployeesAll(allEmps.map(e => ({ ...e, designation_name: (e as Record<string, unknown>).designation_name as string | null ?? null, is_manager: (reportCounts.get(e.id) ?? 0) > 0 })));
+      setEmployeesAll(allEmps.map(e => ({ ...e, is_manager: (reportCounts.get(e.id) ?? 0) > 0 })));
       setAssignments((ass || []) as Assignment[]);
       setResolvedAssignedSet(new Set(((assignedRpc || []) as { employee_id: string }[]).map(r => r.employee_id)));
       setLoading(false);
