@@ -54,7 +54,6 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
   const [assignSubDeptIds, setAssignSubDeptIds] = useState<string[]>([]);
   const [assignManagerIds, setAssignManagerIds] = useState<string[]>([]);
   const [assignEmployeeIds, setAssignEmployeeIds] = useState<string[]>([]);
-  const [assignDesignationNames, setAssignDesignationNames] = useState<string[]>([]);
   const [departments, setDepartments] = useState<Dept[]>([]);
   const [subDepartments, setSubDepartments] = useState<SubDept[]>([]);
   const [employeesAll, setEmployeesAll] = useState<EmpOpt[]>([]);
@@ -108,23 +107,22 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
 
   const filteredSubDepts = subDepartments.filter(s => assignDeptIds.length === 0 || assignDeptIds.includes(s.department_id));
 
-  // Managers: filter by where THEIR REPORTS work, not by the manager's own
-  // department. Picking "HR" should show every manager who has at least one
-  // report in HR — even if that manager themselves sits in another dept.
-  // This was the bug behind "filters mismatching with managers".
-  const managerOptions = (() => {
-    const deptSet = new Set(assignDeptIds);
-    const subDeptSet = new Set(assignSubDeptIds);
-    const desigSet = new Set(assignDesignationNames);
-    const noTreeFilter = deptSet.size === 0 && subDeptSet.size === 0 && desigSet.size === 0;
-    // Build manager_id -> [reports] index from the employees set.
-    const reportsByManager = new Map<string, EmpOpt[]>();
+  const reportsByManager = useMemo(() => {
+    const map = new Map<string, EmpOpt[]>();
     employeesAll.forEach(e => {
       if (!e.manager_id) return;
-      const arr = reportsByManager.get(e.manager_id) ?? [];
+      const arr = map.get(e.manager_id) ?? [];
       arr.push(e);
-      reportsByManager.set(e.manager_id, arr);
+      map.set(e.manager_id, arr);
     });
+    return map;
+  }, [employeesAll]);
+
+  const managerOptions = useMemo(() => {
+    const deptSet = new Set(assignDeptIds);
+    const subDeptSet = new Set(assignSubDeptIds);
+    const noTreeFilter = deptSet.size === 0 && subDeptSet.size === 0;
+
     return employeesAll.filter(m => {
       if (!m.is_manager) return false;
       if (noTreeFilter) return true;
@@ -133,34 +131,18 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
       return reports.some(r => {
         if (deptSet.size && (!r.department_id || !deptSet.has(r.department_id))) return false;
         if (subDeptSet.size && (!r.sub_department_id || !subDeptSet.has(r.sub_department_id))) return false;
-        if (desigSet.size && (!r.designation_name || !desigSet.has(r.designation_name))) return false;
         return true;
       });
     });
-  })();
+  }, [employeesAll, assignDeptIds, assignSubDeptIds, reportsByManager]);
 
-  // Designation options: filtered by current dept/subdept/manager selection.
-  const designationOptions = Array.from(
-    new Set(
-      employeesAll
-        .filter(e => {
-          if (assignDeptIds.length && (!e.department_id || !assignDeptIds.includes(e.department_id))) return false;
-          if (assignSubDeptIds.length && (!e.sub_department_id || !assignSubDeptIds.includes(e.sub_department_id))) return false;
-          if (assignManagerIds.length && (!e.manager_id || !assignManagerIds.includes(e.manager_id))) return false;
-          return true;
-        })
-        .map(e => e.designation_name || 'Unassigned')
-    )
-  ).sort();
-
-  // Specific-employees list: each row must satisfy ALL active filters.
   const employeeOptions = employeesAll.filter(e => {
     if (assignDeptIds.length && (!e.department_id || !assignDeptIds.includes(e.department_id))) return false;
     if (assignSubDeptIds.length && (!e.sub_department_id || !assignSubDeptIds.includes(e.sub_department_id))) return false;
     if (assignManagerIds.length && (!e.manager_id || !assignManagerIds.includes(e.manager_id))) return false;
-    if (assignDesignationNames.length && !assignDesignationNames.includes(e.designation_name || 'Unassigned')) return false;
     return true;
   });
+
   useEffect(() => {
     const allowedSubIds = new Set(filteredSubDepts.map(s => s.id));
     setAssignSubDeptIds(prev => {

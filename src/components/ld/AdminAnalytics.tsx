@@ -9,7 +9,6 @@ type LearnerRow = {
   id: string; name: string; email: string; empId: string;
   department?: string | null;
   subDepartment?: string | null;
-  designation?: string | null;
   managerName?: string | null;
   managerEmail?: string | null;
   managerContact?: string | null;
@@ -22,7 +21,6 @@ type ProfileMini = {
   id: string; full_name: string; email: string; employee_id: string | null;
   department: string | null; sub_department: string | null;
   manager_name: string | null; manager_email: string | null; manager_contact: string | null;
-  designation_name: string | null;
 };
 // Internal helper to convert an employees row (with joined dept + manager)
 // into the ProfileMini shape the rest of this file expects.
@@ -49,7 +47,6 @@ const employeeToProfile = (e: EmployeeJoinRow): ProfileMini | null => {
     manager_name: e.manager?.name ?? null,
     manager_email: e.manager?.email ?? null,
     manager_contact: e.manager?.contact ?? null,
-    designation_name: e.designation_name ?? null,
   };
 };
 
@@ -85,7 +82,6 @@ export function AdminAnalytics() {
   const [department, setDepartment] = useState<string>('all');
   const [subDepartment, setSubDepartment] = useState<string>('all');
   const [managerEmail, setManagerEmail] = useState<string>('all');
-  const [designation, setDesignation] = useState<string>('all');
 
 
   useEffect(() => {
@@ -163,7 +159,6 @@ export function AdminAnalytics() {
           manager_name: e.manager?.name ?? null,
           manager_email: e.manager?.email ?? null,
           manager_contact: e.manager?.contact ?? null,
-          designation_name: e.designation_name ?? null,
         };
       });
 
@@ -231,7 +226,7 @@ export function AdminAnalytics() {
       const status = completion >= 70 ? 'active' : completion >= 30 ? 'at-risk' : 'overdue';
       return {
         id: uid, name: u.full_name || u.email, email: u.email, empId: u.employee_id || '—',
-        department: u.department, subDepartment: u.sub_department, designation: u.designation_name,
+        department: u.department, subDepartment: u.sub_department,
         managerName: u.manager_name, managerEmail: u.manager_email, managerContact: u.manager_contact,
         watchSec, watchPct, completion, score, attempts: userAtt.length, status,
       };
@@ -257,7 +252,6 @@ export function AdminAnalytics() {
       // Narrow stats by ALL OTHER active filters (Cascading Narrowing)
       if (department !== 'all' && (p.department || 'Unassigned') !== department) return;
       if (subDepartment !== 'all' && (p.sub_department || 'Unassigned') !== subDepartment) return;
-      if (designation !== 'all' && (p.designation_name || 'Unassigned') !== designation) return;
       // Note: we don't narrow by managerEmail here because the manager table IS the manager breakdown
 
       const d = p.department || 'Unassigned';
@@ -282,7 +276,7 @@ export function AdminAnalytics() {
       .sort((a, b) => b.pending - a.pending);
 
     return { dStats, mStats };
-  }, [profilesAll, department, subDepartment, designation, lessonIds]);
+  }, [profilesAll, department, subDepartment, lessonIds]);
 
   const departmentStats = stats.dStats;
   const managerStats = stats.mStats;
@@ -315,7 +309,6 @@ export function AdminAnalytics() {
       const key = l.managerEmail || l.managerName || 'Unassigned';
       if (key !== managerEmail) return false;
     }
-    if (designation !== 'all' && (l.designation || 'Unassigned') !== designation) return false;
     if (search && !`${l.name} ${l.empId} ${l.email}`.toLowerCase().includes(search.toLowerCase())) return false;
     return true;
   });
@@ -325,7 +318,6 @@ export function AdminAnalytics() {
     profilesAll
       .filter(p => (subDepartment === 'all' || (p.sub_department || 'Unassigned') === subDepartment))
       .filter(p => (managerEmail === 'all' || (p.manager_email || p.manager_name || 'Unassigned') === managerEmail))
-      .filter(p => (designation === 'all' || (p.designation_name || 'Unassigned') === designation))
       .map(p => p.department || 'Unassigned')
   )).sort();
 
@@ -333,7 +325,6 @@ export function AdminAnalytics() {
     profilesAll
       .filter(p => (department === 'all' || (p.department || 'Unassigned') === department))
       .filter(p => (managerEmail === 'all' || (p.manager_email || p.manager_name || 'Unassigned') === managerEmail))
-      .filter(p => (designation === 'all' || (p.designation_name || 'Unassigned') === designation))
       .map(p => p.sub_department || 'Unassigned'),
   )).sort();
 
@@ -341,31 +332,17 @@ export function AdminAnalytics() {
     profilesAll
       .filter(p => (department === 'all' || (p.department || 'Unassigned') === department))
       .filter(p => (subDepartment === 'all' || (p.sub_department || 'Unassigned') === subDepartment))
-      .filter(p => (designation === 'all' || (p.designation_name || 'Unassigned') === designation))
       .map(p => {
         const key = p.manager_email || p.manager_name || 'Unassigned';
         return [key, { key, label: p.manager_name || p.manager_email || 'Unassigned' }];
       }),
   ).values()).sort((a, b) => a.label.localeCompare(b.label));
 
-  const designationOptions = Array.from(new Set(
-    profilesAll
-      .filter(p => (department === 'all' || (p.department || 'Unassigned') === department))
-      .filter(p => (subDepartment === 'all' || (p.sub_department || 'Unassigned') === subDepartment))
-      .filter(p => (managerEmail === 'all' || (p.manager_email || p.manager_name || 'Unassigned') === managerEmail))
-      .map(p => p.designation_name || 'Unassigned')
-  )).sort();
-
   useEffect(() => {
     if (managerEmail === 'all') return;
     const allowed = new Set(managerOptions.map(m => m.key));
     if (!allowed.has(managerEmail)) setManagerEmail('all');
   }, [department, subDepartment, managerOptions, managerEmail]);
-  useEffect(() => {
-    if (designation === 'all') return;
-    if (!designationOptions.includes(designation)) setDesignation('all');
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [department, subDepartment, managerEmail]);
 
   if (courses.length === 0) {
     return <div style={{padding:36}}><EmptyState icon="📊" title="No courses to analyze" sub="Once you publish a course in Upload & Quiz, analytics will start tracking it."/></div>;
@@ -413,10 +390,6 @@ export function AdminAnalytics() {
         <select value={managerEmail} onChange={e=>setManagerEmail(e.target.value)} title="Filter by manager" style={{padding:'10px 14px', border:'1px solid #DDE4ED', borderRadius:10, fontSize:13, background:'#fff', minWidth:220, fontWeight:600}}>
           <option value="all">All managers</option>
           {managerOptions.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
-        </select>
-        <select value={designation} onChange={e=>setDesignation(e.target.value)} title="Filter by designation" style={{padding:'10px 14px', border:'1px solid #DDE4ED', borderRadius:10, fontSize:13, background:'#fff', minWidth:200, fontWeight:600}}>
-          <option value="all">All designations</option>
-          {designationOptions.map(d => <option key={d} value={d}>{d}</option>)}
         </select>
       </div>
 

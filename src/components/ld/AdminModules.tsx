@@ -138,7 +138,6 @@ function EditAssignmentModal({ course, onClose, onSaved }: { course: Course; onC
   const [addDeptIds, setAddDeptIds] = useState<string[]>([]);
   const [addSubDeptIds, setAddSubDeptIds] = useState<string[]>([]);
   const [addManagerIds, setAddManagerIds] = useState<string[]>([]);
-  const [addDesignationNames, setAddDesignationNames] = useState<string[]>([]);
   const [addEmployeeIds, setAddEmployeeIds] = useState<string[]>([]);
 
   useEffect(() => {
@@ -198,11 +197,11 @@ function EditAssignmentModal({ course, onClose, onSaved }: { course: Course; onC
     });
     return m;
   }, [employeesAll]);
+
   const managerOptions = useMemo(() => {
     const dSet = new Set(addDeptIds);
     const sdSet = new Set(addSubDeptIds);
-    const desSet = new Set(addDesignationNames);
-    const noFilter = dSet.size === 0 && sdSet.size === 0 && desSet.size === 0;
+    const noFilter = dSet.size === 0 && sdSet.size === 0;
     return employeesAll.filter(m => {
       if (!m.is_manager) return false;
       if (noFilter) return true;
@@ -210,32 +209,17 @@ function EditAssignmentModal({ course, onClose, onSaved }: { course: Course; onC
       return reps.some(r => {
         if (dSet.size && (!r.department_id || !dSet.has(r.department_id))) return false;
         if (sdSet.size && (!r.sub_department_id || !sdSet.has(r.sub_department_id))) return false;
-        if (desSet.size && (!r.designation_name || !desSet.has(r.designation_name))) return false;
         return true;
       });
     });
-  }, [employeesAll, addDeptIds, addSubDeptIds, addDesignationNames, reportsByMgr]);
+  }, [employeesAll, addDeptIds, addSubDeptIds, reportsByMgr]);
+
   const employeeOptions = employeesAll.filter(e => {
     if (addDeptIds.length && (!e.department_id || !addDeptIds.includes(e.department_id))) return false;
     if (addSubDeptIds.length && (!e.sub_department_id || !addSubDeptIds.includes(e.sub_department_id))) return false;
     if (addManagerIds.length && (!e.manager_id || !addManagerIds.includes(e.manager_id))) return false;
-    if (addDesignationNames.length && !addDesignationNames.includes(e.designation_name || 'Unassigned')) return false;
     return true;
   });
-
-  // Designation options: narrowed by current dept/subdept/manager picks.
-  const designationOptions = Array.from(
-    new Set(
-      employeesAll
-        .filter(e => {
-          if (addDeptIds.length && (!e.department_id || !addDeptIds.includes(e.department_id))) return false;
-          if (addSubDeptIds.length && (!e.sub_department_id || !addSubDeptIds.includes(e.sub_department_id))) return false;
-          if (addManagerIds.length && (!e.manager_id || !addManagerIds.includes(e.manager_id))) return false;
-          return true;
-        })
-        .map(e => e.designation_name || 'Unassigned')
-    )
-  ).sort();
 
   // ---- Only show options NOT already covered by an existing assignment ----
   const availableDepts = departments.filter(d => !assignedDeptIds.has(d.id));
@@ -250,7 +234,7 @@ function EditAssignmentModal({ course, onClose, onSaved }: { course: Course; onC
   const toggle = (arr: string[], setArr: (v: string[]) => void, id: string) => {
     setArr(arr.includes(id) ? arr.filter(x => x !== id) : [...arr, id]);
   };
-  const anyToAdd = addDeptIds.length || addSubDeptIds.length || addManagerIds.length || addDesignationNames.length || addEmployeeIds.length;
+  const anyToAdd = addDeptIds.length || addSubDeptIds.length || addManagerIds.length || addEmployeeIds.length;
 
 
   const save = async () => {
@@ -262,23 +246,22 @@ function EditAssignmentModal({ course, onClose, onSaved }: { course: Course; onC
       const rows: Record<string, unknown>[] = [];
       if (addEmployeeIds.length > 0) {
         addEmployeeIds.forEach(id => rows.push({ course_id: course.id, employee_id: id }));
-      } else if (addManagerIds.length > 0 && addDeptIds.length === 0 && addSubDeptIds.length === 0 && addDesignationNames.length === 0) {
+      } else if (addManagerIds.length > 0 && addDeptIds.length === 0 && addSubDeptIds.length === 0) {
         // Manager-only: write manager scope so future reports auto-enroll.
         addManagerIds.forEach(id => rows.push({ course_id: course.id, manager_id: id }));
-      } else if (addDeptIds.length > 0 && addSubDeptIds.length === 0 && addManagerIds.length === 0 && addDesignationNames.length === 0) {
+      } else if (addDeptIds.length > 0 && addSubDeptIds.length === 0 && addManagerIds.length === 0) {
         // Dept-only: write dept scope so future joiners auto-enroll.
         addDeptIds.forEach(id => rows.push({ course_id: course.id, department_id: id }));
-      } else if (addSubDeptIds.length > 0 && addDeptIds.length === 0 && addManagerIds.length === 0 && addDesignationNames.length === 0) {
+      } else if (addSubDeptIds.length > 0 && addDeptIds.length === 0 && addManagerIds.length === 0) {
         // Sub-dept only: write sub-dept scope.
         addSubDeptIds.forEach(id => rows.push({ course_id: course.id, sub_department_id: id }));
       } else {
-        // Mixed / designation filter → snapshot intersection as employee_id rows.
+        // Mixed / snapshot intersection as employee_id rows.
         const resolvedIds = new Set<string>();
         employeesAll.forEach(e => {
           if (addDeptIds.length && (!e.department_id || !addDeptIds.includes(e.department_id))) return;
           if (addSubDeptIds.length && (!e.sub_department_id || !addSubDeptIds.includes(e.sub_department_id))) return;
           if (addManagerIds.length && (!e.manager_id || !addManagerIds.includes(e.manager_id))) return;
-          if (addDesignationNames.length && (!e.designation_name || !addDesignationNames.includes(e.designation_name))) return;
           resolvedIds.add(e.id);
         });
         resolvedIds.forEach(id => rows.push({ course_id: course.id, employee_id: id }));
@@ -369,7 +352,6 @@ function EditAssignmentModal({ course, onClose, onSaved }: { course: Course; onC
                   <PickerGroup label={`Departments (${addDeptIds.length})`} options={availableDepts.map(d => ({ id: d.id, label: d.name }))} selected={addDeptIds} onToggle={(id)=>toggle(addDeptIds, setAddDeptIds, id)} searchable/>
                   <PickerGroup label={`Sub-departments (${addSubDeptIds.length})`} options={availableSubDepts.map(s => ({ id: s.id, label: s.name }))} selected={addSubDeptIds} onToggle={(id)=>toggle(addSubDeptIds, setAddSubDeptIds, id)} searchable/>
                   <PickerGroup label={`Managers (${addManagerIds.length})`} options={availableManagers.map(m => ({ id: m.id, label: m.name || m.email }))} selected={addManagerIds} onToggle={(id)=>toggle(addManagerIds, setAddManagerIds, id)} searchable/>
-                  <PickerGroup label={`Designation (${addDesignationNames.length})`} options={designationOptions.map(d => ({ id: d, label: d }))} selected={addDesignationNames} onToggle={(id)=>toggle(addDesignationNames, setAddDesignationNames, id)} searchable/>
                   <PickerGroup label={`Specific employees (${addEmployeeIds.length})`} options={availableEmployees.map(e => ({ id: e.id, label: e.name || e.email }))} selected={addEmployeeIds} onToggle={(id)=>toggle(addEmployeeIds, setAddEmployeeIds, id)} searchable/>
                 </div>
               </>
