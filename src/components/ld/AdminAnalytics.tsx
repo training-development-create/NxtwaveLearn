@@ -641,22 +641,45 @@ function EmployeeDetailModal({ user, onClose, focusCourseId }: { user: LearnerRo
     totalRuntime: number; totalWatched: number; lessonsTotal: number; lessonsCompleted: number;
     avgScore: number; status: 'completed' | 'in-progress' | 'not-started';
     lessons: { id: string; title: string; runtime: number; watched: number; pct: number; completed: boolean; bestScore: number; attempts: number }[];
+    // Agreement compliance
+    agreementRequired: boolean;
+    agreementPath: string | null;          // path to original agreement in storage
+    signedAt: string | null;
+    signedName: string | null;
+    signedPath: string | null;             // snapshot of which version they signed
   };
   const [details, setDetails] = useState<CourseDetail[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastLoginAt, setLastLoginAt] = useState<string | null>(null);
 
+  // Open the original agreement PDF in a new tab via a short-lived signed URL.
+  // We always show the original (per-course) PDF — that's what the learner
+  // signed (signedPath is captured at sign time as an audit snapshot).
+  const viewSignedAgreement = async (path: string) => {
+    const { data, error } = await supabase.storage.from('agreements').createSignedUrl(path, 60 * 5);
+    if (error || !data?.signedUrl) {
+      alert('Could not open the agreement document.');
+      return;
+    }
+    window.open(data.signedUrl, '_blank', 'noopener');
+  };
+
   useEffect(() => {
     (async () => {
       setLoading(true);
-      const [{ data: courses }, { data: lessons }, { data: enrolls }, { data: progress }, { data: attempts }, { data: prof }] = await Promise.all([
-        supabase.from('courses').select('id, title, emoji').order('created_at', { ascending: true }),
+      const [{ data: courses }, { data: lessons }, { data: enrolls }, { data: progress }, { data: attempts }, { data: prof }, { data: sigs }] = await Promise.all([
+        supabase.from('courses').select('id, title, emoji, agreement_required, agreement_pdf_path').order('created_at', { ascending: true }),
         supabase.from('lessons').select('id, course_id, title, duration_seconds, position').order('position', { ascending: true }),
         supabase.from('enrollments').select('course_id').eq('user_id', user.id),
         supabase.from('lesson_progress').select('lesson_id, watched_seconds, completed').eq('user_id', user.id),
         supabase.from('quiz_attempts').select('lesson_id, score, total, passed').eq('user_id', user.id),
         supabase.from('employees').select('last_login_at').eq('auth_user_id', user.id).maybeSingle(),
+        supabase.from('agreement_signatures')
+          .select('course_id, signed_at, signed_full_name, agreement_pdf_path')
+          .eq('user_id', user.id),
       ]);
+      type SigRow = { course_id: string; signed_at: string; signed_full_name: string | null; agreement_pdf_path: string | null };
+      const sigByCourse = new Map<string, SigRow>(((sigs || []) as SigRow[]).map(s => [s.course_id, s]));
       setLastLoginAt((prof as any)?.last_login_at ?? null);
       const enrolledIds = new Set((enrolls || []).map((e: { course_id: string }) => e.course_id));
       const progByLesson = new Map(((progress || []) as { lesson_id: string; watched_seconds: number; completed: boolean }[]).map(p => [p.lesson_id, p]));
@@ -668,7 +691,8 @@ function EmployeeDetailModal({ user, onClose, focusCourseId }: { user: LearnerRo
       (lessons || []).forEach((l: { id: string; course_id: string; title: string; duration_seconds: number; position: number }) => {
         const arr = lessonsByCourse.get(l.course_id) || []; arr.push(l); lessonsByCourse.set(l.course_id, arr);
       });
-      const out: CourseDetail[] = (courses || []).map((c: { id: string; title: string; emoji: string }) => {
+      type CourseRow = { id: string; title: string; emoji: string; agreement_required: boolean | null; agreement_pdf_path: string | null };
+      const out: CourseDetail[] = ((courses || []) as CourseRow[]).map(c => {
         const ls = lessonsByCourse.get(c.id) || [];
         const lessonRows = ls.map(l => {
           const p = progByLesson.get(l.id);
@@ -686,12 +710,18 @@ function EmployeeDetailModal({ user, onClose, focusCourseId }: { user: LearnerRo
         const lessonsCompleted = lessonRows.filter(l => l.completed).length;
         const allScores = lessonRows.map(l => l.bestScore).filter(s => s > 0);
         const avgScore = allScores.length ? Math.round(allScores.reduce((s, x) => s + x, 0) / allScores.length) : 0;
+        const sig = sigByCourse.get(c.id);
         const status: CourseDetail['status'] =
           ls.length > 0 && lessonsCompleted === ls.length ? 'completed'
           : totalWatched > 0 ? 'in-progress' : 'not-started';
         return {
           id: c.id, title: c.title, emoji: c.emoji, enrolled: enrolledIds.has(c.id),
           totalRuntime, totalWatched, lessonsTotal: ls.length, lessonsCompleted, avgScore, status, lessons: lessonRows,
+          agreementRequired: !!c.agreement_required,
+          agreementPath: c.agreement_pdf_path ?? null,
+          signedAt: sig?.signed_at ?? null,
+          signedName: sig?.signed_full_name ?? null,
+          signedPath: sig?.agreement_pdf_path ?? null,
         };
       });
       // Show all course activity for the user (remove focusCourseId filter)
@@ -761,6 +791,33 @@ function EmployeeDetailModal({ user, onClose, focusCourseId }: { user: LearnerRo
                   {c.status==='completed'?'Completed':c.status==='in-progress'?'In progress':'Not started'}
                 </Chip>
               </div>
+              {/* Agreement compliance row — Yes/No + view button when signed */}
+              {(c.agreementRequired || c.signedAt) && (
+                <div style={{padding:'10px 16px', borderTop:'1px solid #F1F4F9', display:'flex', alignItems:'center', gap:12, background:'#fff'}}>
+                  <div style={{fontSize:11, fontWeight:700, color:'#8A97A8', letterSpacing:'.08em', textTransform:'uppercase'}}>Agreement</div>
+                  {c.signedAt ? (
+                    <>
+                      <Chip color="#17A674">Signed · Yes</Chip>
+                      <div style={{flex:1, fontSize:12, color:'#3B4A5E'}}>
+                        Signed by <strong style={{color:'#0A1F3D'}}>{c.signedName || user.name}</strong> on{' '}
+                        <strong style={{color:'#0A1F3D'}}>{new Date(c.signedAt).toLocaleString()}</strong>
+                      </div>
+                      {(c.signedPath || c.agreementPath) && (
+                        <Btn size="sm" variant="soft" onClick={() => viewSignedAgreement((c.signedPath || c.agreementPath) as string)}>
+                          View document
+                        </Btn>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <Chip color="#C2261D">Signed · No</Chip>
+                      <div style={{flex:1, fontSize:12, color:'#5B6A7D'}}>
+                        Learner has not signed this course's agreement yet.
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
               {c.lessons.length > 0 && (
                 <table style={{width:'100%', borderCollapse:'collapse'}}>
                   <thead>

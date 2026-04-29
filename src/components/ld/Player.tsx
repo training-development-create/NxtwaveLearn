@@ -511,7 +511,7 @@ function ComplianceNoticeModal({ courseTitle, agreementRequired, onAcknowledge }
   const tips = [
     { icon: '🎬', text: 'You must watch the full video — no skipping or scrubbing ahead.' },
     { icon: '🎯', text: 'You must score 100% in the assessment to pass.' },
-    { icon: '↩️', text: 'Wrong answers come back to you for retake — your correct ones are kept.' },
+    { icon: '🔁', text: 'Even one wrong answer means you must restart the entire quiz from the beginning.' },
     ...(agreementRequired ? [{ icon: '✍️', text: 'You must read the entire agreement and sign it before completion.' }] : []),
     { icon: '🛑', text: 'Switching tabs or windows will pause the video automatically.' },
   ];

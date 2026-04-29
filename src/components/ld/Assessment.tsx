@@ -20,23 +20,15 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
   // 'agreement' stage = post-quiz, learner must read & sign before completion.
   const [stage, setStage] = useState<'intro'|'quiz'|'result'|'agreement'>('intro');
   const [idx, setIdx] = useState(0);
-  // answers is sized to the FULL question list so we can score the whole
-  // assessment even when retaking only the wrong ones. Indices match
-  // questions[i].
   const [answers, setAnswers] = useState<(number|null)[]>([]);
   const [flagged, setFlagged] = useState<Set<number>>(new Set());
   const [submitting, setSubmitting] = useState(false);
-  // When set, the quiz is operating in "retake wrong only" mode. Contains
-  // the original question indices that need to be re-answered. Empty array
-  // means full quiz.
-  const [retakeIdx, setRetakeIdx] = useState<number[]>([]);
 
-  // The active list of questions for THIS run — either every question (first
-  // attempt) or only the previously-wrong ones (subsequent retakes).
+  // The active question list — always the full quiz now. (Previously the
+  // quiz supported a "retake wrong only" mode; the rule changed: any wrong
+  // answer means the learner restarts the entire quiz.)
   const activeList: { question: typeof questions[number]; originalIdx: number }[] =
-    retakeIdx.length > 0
-      ? retakeIdx.map(i => ({ question: questions[i], originalIdx: i }))
-      : questions.map((q, i) => ({ question: q, originalIdx: i }));
+    questions.map((q, i) => ({ question: q, originalIdx: i }));
 
   useEffect(() => { if (questions.length) setAnswers(Array(questions.length).fill(null)); }, [questions.length]);
   useEffect(() => {
@@ -70,7 +62,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
             <div style={{position:'relative'}}>
               <div style={{fontSize:11, fontWeight:600, letterSpacing:'.12em', color:'#7FDBFF', textTransform:'uppercase'}}>Assessment · {course.title}</div>
               <h2 style={{fontSize:30, color:'#fff', margin:'10px 0 8px', letterSpacing:'-.02em', fontWeight:700}}>{lesson.title}</h2>
-              <p style={{color:'#9EC9F0', fontSize:14, margin:0, lineHeight:1.55, maxWidth:540}}>Answer {questions.length} questions. <strong style={{color:'#fff'}}>Every answer must be correct (100%) to pass.</strong> Wrong answers are returned to you to retry — you do NOT have to redo correct ones.</p>
+              <p style={{color:'#9EC9F0', fontSize:14, margin:0, lineHeight:1.55, maxWidth:540}}>Answer {questions.length} questions. <strong style={{color:'#fff'}}>Every answer must be correct (100%) to pass.</strong> Even one wrong answer means you must restart the full quiz from the beginning.</p>
             </div>
           </div>
           <div style={{padding:'24px 40px', display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:20, borderBottom:'1px solid #EEF2F7'}}>
@@ -83,7 +75,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
           </div>
           <div style={{padding:'22px 40px 28px'}}>
             <ul style={{margin:0, padding:0, listStyle:'none', display:'flex', flexDirection:'column', gap:8, fontSize:13, color:'#3B4A5E'}}>
-              {['You can flag questions and come back','Navigate freely between questions','Results are shared with your L&D admin','Wrong answers come back as a shorter retake — you don\'t restart from scratch','You must answer every question correctly to pass'].map(s => (
+              {['You can flag questions and come back','Navigate freely between questions','Results are shared with your L&D admin','Even one wrong answer means you must restart the entire quiz from the beginning','You must answer every question correctly to pass'].map(s => (
                 <li key={s} style={{display:'flex', gap:10}}><span style={{color:'#17A674'}}>✓</span>{s}</li>
               ))}
             </ul>
@@ -129,18 +121,9 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
       .map((a, i) => (a === questions[i].correct ? -1 : i))
       .filter(i => i !== -1);
     const onRetryAll = () => {
+      // Restart the entire quiz from scratch — even one wrong answer means
+      // the learner re-attempts every question.
       setAnswers(Array(questions.length).fill(null));
-      setRetakeIdx([]);
-      setIdx(0);
-      setStage('quiz');
-    };
-    // Retake-wrong-only: keep correct answers, blank only the wrong ones,
-    // and show only those questions in the next attempt.
-    const onRetryWrong = () => {
-      const next = [...answers];
-      wrongIndices.forEach(i => { next[i] = null; });
-      setAnswers(next);
-      setRetakeIdx(wrongIndices);
       setIdx(0);
       setStage('quiz');
     };
@@ -153,7 +136,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
               <div style={{width:52, height:52, borderRadius:14, background:'rgba(255,255,255,.14)', display:'grid', placeItems:'center', fontSize:24}}>{pass ? '✓' : '!'}</div>
               <div style={{fontSize:11, fontWeight:600, letterSpacing:'.12em', color:pass?'#D9F4E6':'#7FDBFF', marginTop:18, textTransform:'uppercase'}}>{pass?'Passed':'Not yet passed'}</div>
               <div style={{fontSize:48, fontWeight:700, letterSpacing:'-.03em', marginTop:4, lineHeight:1}}>{pct}%</div>
-              <div style={{fontSize:13, color:pass?'#D9F4E6':'#C8DDF4', marginTop:6}}>{correct} of {questions.length} correct · {pass ? (nextLesson ? 'Next video unlocked' : 'Course complete') : `${wrongIndices.length} wrong — retake to reach 100%`}</div>
+              <div style={{fontSize:13, color:pass?'#D9F4E6':'#C8DDF4', marginTop:6}}>{correct} of {questions.length} correct · {pass ? (nextLesson ? 'Next video unlocked' : 'Course complete') : `${wrongIndices.length} wrong — restart the full quiz to try again`}</div>
             </div>
             <div style={{padding:'30px 40px 32px'}}>
               {/* Show only the final result + score; correct answers are intentionally
@@ -175,7 +158,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
               <div style={{marginTop:18, fontSize:12, color:'#5B6A7D'}}>
                 Correct answers are not displayed. {pass
                   ? 'Great work — your completion is recorded.'
-                  : `You answered ${wrongIndices.length} question${wrongIndices.length === 1 ? '' : 's'} incorrectly. Retake just those — your correct answers are kept.`}
+                  : `You answered ${wrongIndices.length} question${wrongIndices.length === 1 ? '' : 's'} incorrectly. Restart the entire quiz from the beginning to try again — every question must be correct.`}
               </div>
               <div style={{marginTop:22, display:'flex', gap:10, flexWrap:'wrap'}}>
                 {pass ? (
@@ -185,10 +168,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
                     ? <Btn size="lg" onClick={() => setStage('agreement')}>Continue to agreement ✍️ →</Btn>
                     : <Btn size="lg" onClick={onNext}>{nextLesson ? 'Start next video →' : 'Back to courses →'}</Btn>
                 ) : (
-                  <>
-                    <Btn size="lg" onClick={onRetryWrong}>Retake {wrongIndices.length} wrong question{wrongIndices.length === 1 ? '' : 's'} →</Btn>
-                    <Btn variant="ghost" size="lg" onClick={onRetryAll}>Restart full quiz</Btn>
-                  </>
+                  <Btn size="lg" onClick={onRetryAll}>Restart full quiz →</Btn>
                 )}
                 <Btn variant="ghost" size="lg" onClick={()=>onNav('courses')}>Back to courses</Btn>
               </div>
@@ -262,7 +242,6 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
           <div style={{padding:'18px 26px', borderBottom:'1px solid #EEF2F7', display:'flex', alignItems:'center', gap:14}}>
             <div style={{fontSize:12, fontWeight:700, color:'#8A97A8', letterSpacing:'.06em', textTransform:'uppercase'}}>
               Question {idx+1} of {totalQs}
-              {retakeIdx.length > 0 && <span style={{marginLeft:8, padding:'2px 8px', background:'#FEEFD3', color:'#B8660F', borderRadius:4, fontSize:10}}>RETAKE WRONG</span>}
             </div>
             <div style={{flex:1}}><ProgressBar value={((idx+1)/totalQs)*100} height={4}/></div>
             <button onClick={()=>{ const f = new Set(flagged); f.has(originalIdx) ? f.delete(originalIdx) : f.add(originalIdx); setFlagged(f); }} style={{padding:'5px 11px', background: flagged.has(originalIdx)?'#FEEFD3':'#F7F9FC', color: flagged.has(originalIdx)?'#B8660F':'#5B6A7D', border:0, borderRadius:8, fontSize:12, fontWeight:600, cursor:'pointer'}}>
@@ -309,7 +288,6 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
             </div>
             <div style={{marginTop:14, fontSize:12, color:'#5B6A7D', lineHeight:1.6}}>
               <div>Required score: <b style={{color:'#0A1F3D'}}>100%</b></div>
-              {retakeIdx.length > 0 && <div style={{marginTop:6, padding:'6px 8px', background:'#FEEFD3', color:'#B8660F', borderRadius:6, fontSize:11, fontWeight:600}}>Retake mode: only your {retakeIdx.length} wrong answer{retakeIdx.length === 1 ? '' : 's'}</div>}
             </div>
           </Card>
         </div>
