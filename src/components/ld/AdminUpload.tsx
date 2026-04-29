@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo, type CSSProperties } from "react";
+import React, { useEffect, useState, useMemo, useRef, type CSSProperties } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "./auth";
 import { Btn, Card, Chip, Icon } from "./ui";
@@ -63,6 +63,21 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
   //                    immediate write was wiped by publish()'s delete).
   const [csvOpen, setCsvOpen] = useState(false);
   const [csvMatched, setCsvMatched] = useState<CsvMatchedEmployee[]>([]);
+
+  // ----- Wizard state persistence ---------------------------------------------
+  // Admin can switch tabs / refresh / close the browser at any point in the
+  // upload wizard and resume from where they left off. Everything serialisable
+  // is mirrored into localStorage on change and restored on mount. File handles
+  // (videoFile / agreementFile / readingFile) cannot be persisted by the
+  // browser — they show a small "re-attach" hint instead of being lost.
+  const persistKey = user ? `admin-upload-state-${user.id}` : null;
+  const restoredRef = useRef(false);
+  // True briefly right after restoring so we can show "resumed where you left off".
+  const [resumed, setResumed] = useState(false);
+  // Names of files the admin had picked before navigating away (purely informational).
+  const [missingVideoName, setMissingVideoName] = useState<string | null>(null);
+  const [missingAgreementName, setMissingAgreementName] = useState<string | null>(null);
+  const [missingReadingName, setMissingReadingName] = useState<string | null>(null);
 
   // ----- Assignment picker state -----
   type Dept = { id: string; name: string };
@@ -233,6 +248,90 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
     supabase.from('courses').select('id, title').order('created_at', { ascending: true }).then(({ data }) => setExistingCourses(data || []));
   }, []);
 
+  // ----- Restore wizard state from localStorage on first mount ----------------
+  useEffect(() => {
+    if (!persistKey || restoredRef.current) return;
+    restoredRef.current = true;
+    try {
+      const raw = localStorage.getItem(persistKey);
+      if (!raw) return;
+      const s = JSON.parse(raw) as {
+        step?: number; mode?: 'new'|'existing'; existingCourseId?: string;
+        courseTitle?: string; tag?: string; hue?: string; emoji?: string; blurb?: string;
+        lessonTitle?: string; videoDuration?: number;
+        questions?: Q[]; active?: number;
+        assignAll?: boolean; assignDeptIds?: string[]; assignSubDeptIds?: string[];
+        assignManagerIds?: string[]; assignEmployeeIds?: string[];
+        csvMatched?: CsvMatchedEmployee[];
+        videoFileName?: string; agreementFileName?: string; readingFileName?: string;
+      };
+      if (typeof s.step === 'number') setStep(s.step);
+      if (s.mode) setMode(s.mode);
+      if (s.existingCourseId) setExistingCourseId(s.existingCourseId);
+      if (s.courseTitle) setCourseTitle(s.courseTitle);
+      if (s.tag) setTag(s.tag);
+      if (s.hue) setHue(s.hue);
+      if (s.emoji) setEmoji(s.emoji);
+      if (s.blurb) setBlurb(s.blurb);
+      if (s.lessonTitle) setLessonTitle(s.lessonTitle);
+      if (typeof s.videoDuration === 'number') setVideoDuration(s.videoDuration);
+      if (Array.isArray(s.questions)) setQuestions(s.questions);
+      if (typeof s.active === 'number') setActive(s.active);
+      if (typeof s.assignAll === 'boolean') setAssignAll(s.assignAll);
+      if (Array.isArray(s.assignDeptIds)) setAssignDeptIds(s.assignDeptIds);
+      if (Array.isArray(s.assignSubDeptIds)) setAssignSubDeptIds(s.assignSubDeptIds);
+      if (Array.isArray(s.assignManagerIds)) setAssignManagerIds(s.assignManagerIds);
+      if (Array.isArray(s.assignEmployeeIds)) setAssignEmployeeIds(s.assignEmployeeIds);
+      if (Array.isArray(s.csvMatched)) setCsvMatched(s.csvMatched);
+      if (s.videoFileName) setMissingVideoName(s.videoFileName);
+      if (s.agreementFileName) setMissingAgreementName(s.agreementFileName);
+      if (s.readingFileName) setMissingReadingName(s.readingFileName);
+      // Tell the user we restored. Auto-dismiss after 4s.
+      const hadAnything = (s.courseTitle || s.lessonTitle || (s.questions && s.questions.length) || s.videoFileName);
+      if (hadAnything) {
+        setResumed(true);
+        setTimeout(() => setResumed(false), 4000);
+      }
+    } catch (e) {
+      console.warn('[AdminUpload] Could not restore wizard state:', e);
+    }
+  }, [persistKey]);
+
+  // ----- Save wizard state on every change ------------------------------------
+  // Wait until restoreEffect has run so we never overwrite a saved snapshot
+  // with the initial defaults during the first render.
+  useEffect(() => {
+    if (!persistKey || !restoredRef.current) return;
+    try {
+      const snapshot = {
+        step, mode, existingCourseId,
+        courseTitle, tag, hue, emoji, blurb,
+        lessonTitle, videoDuration,
+        questions, active,
+        assignAll, assignDeptIds, assignSubDeptIds, assignManagerIds, assignEmployeeIds,
+        csvMatched,
+        // File objects can't be persisted — but remembering the name lets us
+        // prompt the admin to re-attach the same file.
+        videoFileName: videoFile?.name ?? missingVideoName ?? null,
+        agreementFileName: agreementFile?.name ?? missingAgreementName ?? null,
+        readingFileName: readingFile?.name ?? missingReadingName ?? null,
+      };
+      localStorage.setItem(persistKey, JSON.stringify(snapshot));
+    } catch (e) {
+      // Ignore quota errors etc.
+      console.warn('[AdminUpload] Could not persist wizard state:', e);
+    }
+  }, [persistKey, step, mode, existingCourseId, courseTitle, tag, hue, emoji, blurb,
+      lessonTitle, videoDuration, questions, active,
+      assignAll, assignDeptIds, assignSubDeptIds, assignManagerIds, assignEmployeeIds,
+      csvMatched, videoFile, agreementFile, readingFile,
+      missingVideoName, missingAgreementName, missingReadingName]);
+
+  // Clear the saved missing-name hints once the admin re-picks a file.
+  useEffect(() => { if (videoFile) setMissingVideoName(null); }, [videoFile]);
+  useEffect(() => { if (agreementFile) setMissingAgreementName(null); }, [agreementFile]);
+  useEffect(() => { if (readingFile) setMissingReadingName(null); }, [readingFile]);
+
   // Read duration from chosen file
   const onPickVideo = (f: File | null) => {
     setVideoFile(f);
@@ -334,7 +433,13 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
       const path = `${courseId}/${crypto.randomUUID()}.${ext}`;
       setUploadPct(10);
       const { error: upErr } = await supabase.storage.from('course-videos').upload(path, videoFile, { upsert: false, contentType: videoFile.type });
-      if (upErr) throw upErr;
+      if (upErr) {
+        // Bubble up a clearer error if the bucket is missing.
+        if (/bucket not found/i.test(upErr.message)) {
+          throw new Error('Storage bucket "course-videos" not found. Ask your DBA to apply storage migrations (see supabase/migrations).');
+        }
+        throw upErr;
+      }
       setUploadPct(80);
 
       const { count } = await supabase.from('lessons').select('id', { count: 'exact', head: true }).eq('course_id', courseId);
@@ -344,25 +449,62 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
 
       // Optional reading material — uploaded to public 'reading-materials' bucket
       // and stamped on the lesson row. Not gated, supplementary only.
+      // If the bucket is missing (migration not yet applied) we soft-skip the
+      // upload so the rest of the publish doesn't fail. The admin gets a banner
+      // about it after publish completes.
       let readingPath: string | null = null;
       let readingName: string | null = null;
+      let readingSkippedReason: string | null = null;
       if (readingFile) {
         const rExt = readingFile.name.split('.').pop() || 'pdf';
-        readingPath = `${courseId}/reading-${crypto.randomUUID()}.${rExt}`;
-        const { error: rUpErr } = await supabase.storage.from('reading-materials').upload(readingPath, readingFile, {
+        const tryPath = `${courseId}/reading-${crypto.randomUUID()}.${rExt}`;
+        const { error: rUpErr } = await supabase.storage.from('reading-materials').upload(tryPath, readingFile, {
           upsert: false,
           contentType: readingFile.type || 'application/octet-stream',
         });
-        if (rUpErr) throw rUpErr;
-        readingName = readingFile.name;
+        if (rUpErr) {
+          if (/bucket not found/i.test(rUpErr.message)) {
+            readingSkippedReason = 'Reading-material bucket not found in this Supabase project. The lesson was published without it. Apply migration 20260429120000_lesson_reading_material.sql (or run "supabase db push") to enable reading-material uploads.';
+            console.warn('[AdminUpload] reading-materials bucket missing — skipping reading file');
+          } else {
+            throw rUpErr;
+          }
+        } else {
+          readingPath = tryPath;
+          readingName = readingFile.name;
+        }
       }
 
-      const { data: lesson, error: e2 } = await supabase.from('lessons').insert({
-        course_id: courseId, title: lessonTitle.trim(), duration_seconds: dur,
-        video_path: path, position,
-        reading_material_path: readingPath, reading_material_name: readingName,
-      }).select('id').single();
-      if (e2) throw e2;
+      // Insert lesson. If the reading_material_* columns don't exist in this
+      // Supabase project (migration not applied), Postgres rejects the unknown
+      // columns — retry without them so the publish still succeeds.
+      let lesson: { id: string } | null = null;
+      {
+        const { data, error: e2 } = await supabase.from('lessons').insert({
+          course_id: courseId, title: lessonTitle.trim(), duration_seconds: dur,
+          video_path: path, position,
+          reading_material_path: readingPath, reading_material_name: readingName,
+        }).select('id').single();
+        if (e2) {
+          if (/reading_material_(path|name)/i.test(e2.message) || /column .* does not exist/i.test(e2.message)) {
+            console.warn('[AdminUpload] lessons.reading_material_* columns missing — retrying without them');
+            const retry = await supabase.from('lessons').insert({
+              course_id: courseId, title: lessonTitle.trim(), duration_seconds: dur,
+              video_path: path, position,
+            }).select('id').single();
+            if (retry.error) throw retry.error;
+            lesson = retry.data as { id: string };
+            if (!readingSkippedReason && readingFile) {
+              readingSkippedReason = 'Lesson columns for reading material are missing. Apply migration 20260429120000_lesson_reading_material.sql, then re-publish to attach reading material.';
+            }
+          } else {
+            throw e2;
+          }
+        } else {
+          lesson = data as { id: string };
+        }
+      }
+      if (!lesson) throw new Error('Failed to create lesson row.');
 
       const valid = questions.filter(qq => qq.q.trim() && qq.options.every(o => o.trim()));
       if (valid.length) {
@@ -385,7 +527,12 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
           upsert: false,
           contentType: agreementFile.type || 'application/pdf',
         });
-        if (aUpErr) throw aUpErr;
+        if (aUpErr) {
+          if (/bucket not found/i.test(aUpErr.message)) {
+            throw new Error('Storage bucket "agreements" not found. Apply storage migrations (or remove the agreement file before publishing).');
+          }
+          throw aUpErr;
+        }
         const { error: cUpErr } = await supabase.from('courses')
           .update({ agreement_pdf_path: aPath, agreement_required: true })
           .eq('id', courseId);
@@ -511,12 +658,24 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
         }
       }
       setUploadPct(100);
+      // Wizard finished — wipe the persisted draft so the next visit starts fresh.
+      if (persistKey) {
+        try { localStorage.removeItem(persistKey); } catch { /* ignore */ }
+      }
       setSaving(false);
+      // If the reading material was soft-skipped (bucket/columns missing), let
+      // the admin know via a non-blocking alert before navigating away.
+      if (readingSkippedReason) {
+        // eslint-disable-next-line no-alert
+        alert(`Course published, but: ${readingSkippedReason}`);
+      }
       onNav('admin-dashboard');
     } catch (err) {
       const msg = (err as Error).message || '';
       if (msg.includes('row-level security policy for table "courses"')) {
         setError('You are not passing admin DB policy. Please apply the admin-role compatibility SQL patch, then retry publish.');
+      } else if (/bucket not found/i.test(msg)) {
+        setError(`${msg} — No data was lost; your draft is auto-saved and the publish can be retried after the bucket is created.`);
       } else {
         setError(msg);
       }
@@ -524,8 +683,30 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
     }
   };
 
+  // Reset wizard back to a clean slate (also clears localStorage draft).
+  const resetDraft = () => {
+    if (!confirm('Discard the saved draft and start over? This cannot be undone.')) return;
+    if (persistKey) { try { localStorage.removeItem(persistKey); } catch { /* ignore */ } }
+    setStep(1); setMode('new'); setExistingCourseId('');
+    setCourseTitle(''); setTag('Mandatory'); setHue(HUES[0]); setEmoji(EMOJIS[0]); setBlurb('');
+    setLessonTitle(''); setVideoFile(null); setVideoDuration(0); setUploadPct(0);
+    setAgreementFile(null); setReadingFile(null);
+    setQuestions([]); setActive(0); setError(null); setParseError(null);
+    setAssignAll(true); setAssignDeptIds([]); setAssignSubDeptIds([]); setAssignManagerIds([]); setAssignEmployeeIds([]);
+    setCsvMatched([]);
+    setMissingVideoName(null); setMissingAgreementName(null); setMissingReadingName(null);
+    setResumed(false);
+  };
+
   return (
     <div style={{padding:'28px 36px 48px', animation:'fadeUp .3s'}}>
+      {resumed && (
+        <div style={{marginBottom:14, padding:'10px 14px', background:'#E8F7EF', border:'1px solid #C5EBD7', borderRadius:10, color:'#0F7C57', fontSize:13, fontWeight:600, display:'flex', alignItems:'center', gap:10}}>
+          <span style={{fontSize:16}}>↻</span>
+          <span style={{flex:1}}>Resumed your saved draft. You can switch tabs at any time — progress is auto-saved here.</span>
+          <button onClick={resetDraft} style={{padding:'4px 10px', background:'#fff', border:'1px solid #C5EBD7', color:'#0F7C57', borderRadius:6, fontSize:11, fontWeight:700, cursor:'pointer'}}>Start over</button>
+        </div>
+      )}
       <div style={{display:'grid', gridTemplateColumns:'1fr 320px', gap:20}}>
         <div>
           <div style={{display:'flex', alignItems:'center', gap:10, marginBottom:20}}>
@@ -601,6 +782,12 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
                         <div style={{fontSize:12, color:'#5B6A7D', marginTop:4}}>{(videoFile.size/1024/1024).toFixed(1)} MB · {videoDuration ? `${Math.floor(videoDuration/60)}m ${videoDuration%60}s` : 'reading…'}</div>
                         <div style={{marginTop:10, fontSize:12, color:'#0072FF', fontWeight:600}}>Click to change</div>
                       </div>
+                    ) : missingVideoName ? (
+                      <div>
+                        <div style={{fontSize:32, marginBottom:6}}>📎</div>
+                        <div style={{fontSize:14, fontWeight:700, color:'#9A6708'}}>Re-attach: {missingVideoName}</div>
+                        <div style={{fontSize:12, color:'#5B6A7D', marginTop:4}}>Browsers can't keep files across reloads — pick the same file again to continue.</div>
+                      </div>
                     ) : (
                       <div>
                         <div style={{fontSize:32, marginBottom:6}}>📤</div>
@@ -621,6 +808,12 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
                         <div style={{fontSize:24, marginBottom:4}}>📘</div>
                         <div style={{fontSize:13, fontWeight:700, color:'#0A1F3D'}}>{readingFile.name}</div>
                         <div style={{fontSize:11, color:'#5B6A7D', marginTop:2}}>{(readingFile.size/1024).toFixed(0)} KB · click to change</div>
+                      </div>
+                    ) : missingReadingName ? (
+                      <div>
+                        <div style={{fontSize:24, marginBottom:4}}>📎</div>
+                        <div style={{fontSize:13, fontWeight:700, color:'#9A6708'}}>Re-attach: {missingReadingName}</div>
+                        <div style={{fontSize:11, color:'#5B6A7D', marginTop:2}}>Pick the file again to keep it in this draft, or skip — it's optional.</div>
                       </div>
                     ) : (
                       <div>
@@ -828,6 +1021,12 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
                         <div style={{fontSize:24, marginBottom:4}}>📄</div>
                         <div style={{fontSize:13, fontWeight:700, color:'#0A1F3D'}}>{agreementFile.name}</div>
                         <div style={{fontSize:11, color:'#5B6A7D', marginTop:2}}>{(agreementFile.size/1024).toFixed(0)} KB · click to change</div>
+                      </div>
+                    ) : missingAgreementName ? (
+                      <div>
+                        <div style={{fontSize:24, marginBottom:4}}>📎</div>
+                        <div style={{fontSize:13, fontWeight:700, color:'#9A6708'}}>Re-attach: {missingAgreementName}</div>
+                        <div style={{fontSize:11, color:'#5B6A7D', marginTop:2}}>Pick the same PDF again to keep the signed-agreement requirement.</div>
                       </div>
                     ) : (
                       <div>
