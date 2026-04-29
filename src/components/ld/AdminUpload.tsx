@@ -4,6 +4,7 @@ import { useAuth } from "./auth";
 import { Btn, Card, Chip, Icon } from "./ui";
 import type { Nav } from "./App";
 import { CsvAssignModal, type CsvMatchedEmployee } from "./CsvAssign";
+import { putFile, getFile, clearFiles } from "./fileStore";
 
 const inputStyle: CSSProperties = { padding:'10px 12px', border:'1px solid #DDE4ED', borderRadius:8, fontSize:14, outline:'none', background:'#fff', fontFamily:'inherit' };
 
@@ -286,6 +287,15 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
       if (s.videoFileName) setMissingVideoName(s.videoFileName);
       if (s.agreementFileName) setMissingAgreementName(s.agreementFileName);
       if (s.readingFileName) setMissingReadingName(s.readingFileName);
+      // Try to restore actual File blobs from IndexedDB so the admin doesn't
+      // need to re-attach. Async — the missing-name hint stays visible until
+      // the file is found (or, if not found, the admin can re-attach).
+      if (user) {
+        const base = `${user.id}`;
+        getFile(`${base}:video`).then(f => { if (f) { setVideoFile(f); setMissingVideoName(null); } });
+        getFile(`${base}:agreement`).then(f => { if (f) { setAgreementFile(f); setMissingAgreementName(null); } });
+        getFile(`${base}:reading`).then(f => { if (f) { setReadingFile(f); setMissingReadingName(null); } });
+      }
       // Tell the user we restored. Auto-dismiss after 4s.
       const hadAnything = (s.courseTitle || s.lessonTitle || (s.questions && s.questions.length) || s.videoFileName);
       if (hadAnything) {
@@ -331,6 +341,22 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
   useEffect(() => { if (videoFile) setMissingVideoName(null); }, [videoFile]);
   useEffect(() => { if (agreementFile) setMissingAgreementName(null); }, [agreementFile]);
   useEffect(() => { if (readingFile) setMissingReadingName(null); }, [readingFile]);
+
+  // Persist file blobs to IndexedDB so they survive tab switches & reloads.
+  // Only runs after the restore effect has flipped restoredRef so we don't
+  // clobber a saved blob with the initial null on first render.
+  useEffect(() => {
+    if (!user || !restoredRef.current) return;
+    putFile(`${user.id}:video`, videoFile);
+  }, [user, videoFile]);
+  useEffect(() => {
+    if (!user || !restoredRef.current) return;
+    putFile(`${user.id}:agreement`, agreementFile);
+  }, [user, agreementFile]);
+  useEffect(() => {
+    if (!user || !restoredRef.current) return;
+    putFile(`${user.id}:reading`, readingFile);
+  }, [user, readingFile]);
 
   // Read duration from chosen file
   const onPickVideo = (f: File | null) => {
@@ -662,6 +688,7 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
       if (persistKey) {
         try { localStorage.removeItem(persistKey); } catch { /* ignore */ }
       }
+      if (user) { try { await clearFiles(`${user.id}:`); } catch { /* ignore */ } }
       setSaving(false);
       // If the reading material was soft-skipped (bucket/columns missing), let
       // the admin know via a non-blocking alert before navigating away.
@@ -687,6 +714,7 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
   const resetDraft = () => {
     if (!confirm('Discard the saved draft and start over? This cannot be undone.')) return;
     if (persistKey) { try { localStorage.removeItem(persistKey); } catch { /* ignore */ } }
+    if (user) { clearFiles(`${user.id}:`).catch(() => {}); }
     setStep(1); setMode('new'); setExistingCourseId('');
     setCourseTitle(''); setTag('Mandatory'); setHue(HUES[0]); setEmoji(EMOJIS[0]); setBlurb('');
     setLessonTitle(''); setVideoFile(null); setVideoDuration(0); setUploadPct(0);

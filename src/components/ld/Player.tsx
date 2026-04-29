@@ -42,11 +42,26 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
   }, [courseId, user]);
 
   // Has the user signed this course's agreement (if any)?
+  // Refetch on tab focus / visibility so returning from the agreement-sign
+  // view updates the unlocked state without a manual page refresh.
   useEffect(() => {
     if (!user || !courseId) { setHasSignedAgreement(false); return; }
-    supabase.from('agreement_signatures').select('id').eq('user_id', user.id).eq('course_id', courseId).maybeSingle()
-      .then(({ data }) => setHasSignedAgreement(!!data));
-  }, [user, courseId]);
+    let cancelled = false;
+    const fetchSig = () => {
+      supabase.from('agreement_signatures').select('id').eq('user_id', user.id).eq('course_id', courseId).maybeSingle()
+        .then(({ data }) => { if (!cancelled) setHasSignedAgreement(!!data); });
+    };
+    fetchSig();
+    const onVisible = () => { if (!document.hidden) { fetchSig(); reload(); } };
+    const onFocus = () => { fetchSig(); reload(); };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onFocus);
+    return () => {
+      cancelled = true;
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [user, courseId, reload]);
 
   const acknowledgeCompliance = () => {
     if (user && courseId && typeof window !== 'undefined') {
@@ -311,8 +326,11 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
     setActiveId(id);
   };
 
-  const watchedPct = DUR ? (furthest / DUR) * 100 : 0;
-  const unlocked = watchedPct >= UNLOCK_THRESHOLD * 100;
+  const serverWatched = lesson ? (progress[lesson.id]?.watched_seconds ?? 0) : 0;
+  const effectiveWatched = Math.max(furthest, serverWatched);
+  const watchedPct = DUR ? (effectiveWatched / DUR) * 100 : 0;
+  const serverCompleted = !!(lesson && progress[lesson.id]?.completed);
+  const unlocked = serverCompleted || watchedPct >= UNLOCK_THRESHOLD * 100;
   const goToQuiz = async () => {
     // Save current watch position; do NOT mark completed — that happens on assessment pass.
     if (user && lesson) await saveLessonProgress(user.id, lesson.id, furthest, !!progress[lesson.id]?.completed);
@@ -392,7 +410,24 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
               onTimeUpdate={onTimeUpdate}
               onPlay={() => setPaused(false)}
               onPause={() => { setPaused(true); flushProgress(); }}
-              onEnded={flushProgress}
+              onEnded={() => {
+                // Snap to full duration so floating-point drift in
+                // currentTime (e.g. 99.7s on a 100s video) doesn't keep
+                // the assessment locked. Mark completed locally, persist,
+                // and refetch so the unlock state updates without a
+                // manual page refresh.
+                if (DUR > 0) {
+                  furthestRef.current = DUR;
+                  setFurthest(DUR);
+                  setT(DUR);
+                }
+                completedRef.current = true;
+                if (user && lesson) {
+                  saveLessonProgress(user.id, lesson.id, DUR || furthestRef.current, true)
+                    .then(() => reload())
+                    .catch(() => reload());
+                }
+              }}
               onSeeking={enforceNoForwardSeek}
               onSeeked={() => { enforceNoForwardSeek(); flushProgress(); }}
               onClick={togglePlay}

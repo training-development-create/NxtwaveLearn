@@ -6,6 +6,11 @@
 html, body, #root { margin:0; padding:0; min-height:100vh; background:#EAF2FA; font-family:"DM Sans", system-ui, -apple-system, sans-serif; }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 button { font-family: inherit; }
+/* Hide the text caret ('|') globally — it was appearing on focused
+   non-editable elements (divs/buttons) when the user clicked. Editable
+   fields still need a visible caret, so opt them back in below. */
+html, body { caret-color: transparent; }
+input, textarea, select, [contenteditable], [contenteditable="true"] { caret-color: auto; }
 /* Suppress the rectangular focus outline that browsers draw on click/tap.
    Keyboard users still get a visible outline via :focus-visible. */
 *:focus { outline: none; }

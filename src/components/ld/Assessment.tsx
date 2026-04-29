@@ -32,13 +32,17 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
     if (!persistKey || restoredRef.current) return;
     try {
       const raw = localStorage.getItem(persistKey);
-      if (!raw) return;
-      const saved = JSON.parse(raw) as { stage?: typeof stage; idx?: number; answers?: (number|null)[]; flagged?: number[] };
-      if (saved.stage) setStage(saved.stage);
-      if (typeof saved.idx === 'number') setIdx(saved.idx);
-      if (Array.isArray(saved.answers)) setAnswers(saved.answers);
-      if (Array.isArray(saved.flagged)) setFlagged(new Set(saved.flagged));
+      if (raw) {
+        const saved = JSON.parse(raw) as { stage?: typeof stage; idx?: number; answers?: (number|null)[]; flagged?: number[] };
+        if (saved.stage) setStage(saved.stage);
+        if (typeof saved.idx === 'number') setIdx(saved.idx);
+        if (Array.isArray(saved.answers)) setAnswers(saved.answers);
+        if (Array.isArray(saved.flagged)) setFlagged(new Set(saved.flagged));
+      }
     } catch { /* ignore corrupt state */ }
+    // CRITICAL: must always flip the gate so the save effect starts firing
+    // for fresh quizzes too (previously stayed false when no saved state
+    // existed → quiz restarted from scratch on every tab switch).
     restoredRef.current = true;
   }, [persistKey]);
   useEffect(() => {
