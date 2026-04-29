@@ -201,7 +201,7 @@ export function AdminDashboard({ onNav }: { onNav: Nav }) {
             <div style={{display:'flex', alignItems:'center', marginBottom:16}}>
               <div>
                 <div className="eyebrow">PROGRESS FUNNEL</div>
-                <div style={{fontSize:18, fontWeight:800, color:'#002A4B', marginTop:4}}>Assigned → Passed quiz</div>
+                <div style={{fontSize:18, fontWeight:800, color:'#002A4B', marginTop:4}}>Assigned → Passed assessment</div>
               </div>
               <a style={{marginLeft:'auto', fontSize:13, cursor:'pointer'}} onClick={()=>onNav('admin-analytics')}>Deep dive →</a>
             </div>

@@ -47,7 +47,7 @@ export function Dashboard({ onNav }: { onNav: Nav }) {
         <Card pad={24} style={{marginBottom:32, color:'#5B6A7D', fontSize:13}}>Loading…</Card>
       ) : required.length === 0 ? (
         <Card pad={0} style={{marginBottom:32}}>
-          <EmptyState icon="🎓" title="Nothing required yet" sub="When your L&D team publishes mandatory training, it'll show up here." action={<Btn variant="soft" onClick={()=>onNav('courses')}>Browse all courses</Btn>}/>
+          <EmptyState icon="🎓" title="Nothing required yet" sub="When your Compliance team publishes mandatory training, it'll show up here." action={<Btn variant="soft" onClick={()=>onNav('courses')}>Browse all courses</Btn>}/>
         </Card>
       ) : (
         <Card pad={0} style={{marginBottom:32, overflow:'hidden'}}>

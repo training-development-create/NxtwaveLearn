@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Btn, Card, Chip, EmptyState } from "./ui";
 import type { Nav } from "./App";
+import { CsvAssignModal } from "./CsvAssign";
 
 type Course = { id: string; title: string; tag: string; emoji: string; published_at: string | null };
 type Lesson = { id: string; title: string; course_id: string; duration_seconds: number; video_path: string | null };
@@ -45,7 +46,7 @@ export function AdminModules({ onNav }: { onNav: Nav }) {
   };
 
   const deleteCourse = async (c: Course) => {
-    if (!confirm(`Delete course "${c.title}" and ALL its videos & quizzes?`)) return;
+    if (!confirm(`Delete course "${c.title}" and ALL its videos & assessments?`)) return;
     const courseLessons = lessons.filter(l => l.course_id === c.id);
     const paths = courseLessons.map(l => l.video_path).filter(Boolean) as string[];
     if (paths.length) await supabase.storage.from('course-videos').remove(paths);
@@ -66,7 +67,7 @@ export function AdminModules({ onNav }: { onNav: Nav }) {
       </div>
 
       {loading ? <Card pad={24} style={{color:'#5B6A7D', fontSize:13}}>Loading…</Card>
-       : courses.length === 0 ? <EmptyState icon="📚" title="No courses yet" sub="Create your first course in Upload & Quiz." action={<Btn onClick={()=>onNav('admin-upload')}>+ New course</Btn>}/>
+       : courses.length === 0 ? <EmptyState icon="📚" title="No courses yet" sub="Create your first course in Upload & Assessment." action={<Btn onClick={()=>onNav('admin-upload')}>+ New course</Btn>}/>
        : (
         <div style={{display:'flex', flexDirection:'column', gap:12}}>
           {courses.map(c => {
@@ -139,6 +140,10 @@ function EditAssignmentModal({ course, onClose, onSaved }: { course: Course; onC
   const [addSubDeptIds, setAddSubDeptIds] = useState<string[]>([]);
   const [addManagerIds, setAddManagerIds] = useState<string[]>([]);
   const [addEmployeeIds, setAddEmployeeIds] = useState<string[]>([]);
+
+  // CSV bulk-add — opens a separate modal that validates emails against the
+  // employee directory and inserts course_assignments rows for matched users.
+  const [csvOpen, setCsvOpen] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -344,9 +349,12 @@ function EditAssignmentModal({ course, onClose, onSaved }: { course: Course; onC
               </div>
             ) : (
               <>
-                <div style={{marginBottom:10}}>
-                  <div className="eyebrow">ADD MORE SCOPES</div>
-                  <div style={{fontSize:12, color:'#5B6A7D', marginTop:4}}>Pick from the lists below — already-assigned items are hidden automatically.</div>
+                <div style={{marginBottom:10, display:'flex', alignItems:'flex-start', gap:12}}>
+                  <div style={{flex:1}}>
+                    <div className="eyebrow">ADD MORE SCOPES</div>
+                    <div style={{fontSize:12, color:'#5B6A7D', marginTop:4}}>Pick from the lists below — already-assigned items are hidden automatically.</div>
+                  </div>
+                  <Btn variant="ghost" size="sm" onClick={()=>setCsvOpen(true)}>📥 Upload CSV</Btn>
                 </div>
                 <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:12}}>
                   <PickerGroup label={`Departments (${addDeptIds.length})`} options={availableDepts.map(d => ({ id: d.id, label: d.name }))} selected={addDeptIds} onToggle={(id)=>toggle(addDeptIds, setAddDeptIds, id)} searchable/>
@@ -366,6 +374,14 @@ function EditAssignmentModal({ course, onClose, onSaved }: { course: Course; onC
           <Btn variant="success" disabled={!anyToAdd || busy || isCurrentlyScopeAll} onClick={save}>{busy ? 'Saving…' : `Add ${anyToAdd ? `(${addDeptIds.length + addSubDeptIds.length + addManagerIds.length + addEmployeeIds.length})` : ''}`}</Btn>
         </div>
       </div>
+      {csvOpen && (
+        <CsvAssignModal
+          courseId={course.id}
+          courseTitle={course.title}
+          onClose={()=>setCsvOpen(false)}
+          onAssigned={()=>onSaved()}
+        />
+      )}
     </div>
   );
 }

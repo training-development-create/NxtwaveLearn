@@ -31,7 +31,7 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
   }, [courseId]);
 
   // One-time compliance notice per (user, course). Stored in localStorage so
-  // we don't nag returning learners. The modal still appears the first time
+  // we don't nag returning learners. The wizard still appears the first time
   // a user opens any new course they're enrolled in.
   useEffect(() => {
     if (!courseId || !user) return;
@@ -88,10 +88,7 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
   const [t, setT] = useState(0);
   const [furthest, setFurthest] = useState(0);
   const [showNote, setShowNote] = useState<string | null>(null);
-  const [speed, setSpeed] = useState<1 | 1.5>(1);
   const [paused, setPaused] = useState(true);
-  const [muted, setMuted] = useState(false);
-  const [vol, setVol] = useState(1);
   const lastSaveRef = useRef(0);
   const furthestRef = useRef(0);
   const completedRef = useRef(false);
@@ -127,12 +124,21 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
     return () => v.removeEventListener('loadedmetadata', onLoaded);
   }, [videoSrc]);
 
-  // Apply playback speed (we intentionally only allow 1x or 1.5x).
+  // Force playback rate to 1x — speed switching is intentionally disabled
+  // for compliance training. Even if the user opens browser dev tools, we
+  // re-pin it on every play / rate change event.
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
-    v.playbackRate = speed;
-  }, [speed, videoSrc]);
+    v.playbackRate = 1;
+    const pin = () => { if (v.playbackRate !== 1) v.playbackRate = 1; };
+    v.addEventListener('ratechange', pin);
+    v.addEventListener('play', pin);
+    return () => {
+      v.removeEventListener('ratechange', pin);
+      v.removeEventListener('play', pin);
+    };
+  }, [videoSrc]);
 
   // If progress row arrives slightly later, align resume position once.
   useEffect(() => {
@@ -171,10 +177,13 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
     return () => { window.removeEventListener('beforeunload', flush); flush(); };
   }, [user, lesson]);
 
-  // Auto-pause if learner switches tabs or windows. Forces full attention
-  // on the video — no playing in the background while another tab is focused.
+  // Auto-pause if the learner switches tabs / windows / minimises while the
+  // video is still being watched for the first time. Once the lesson has
+  // hit 100% (completedRef is true), this restriction is lifted — the user
+  // can keep the video open on another monitor while reviewing.
   useEffect(() => {
     const pauseIfPlaying = (reason: string) => {
+      if (completedRef.current) return; // post-completion: no tab-switch enforcement
       const v = videoRef.current;
       if (!v || v.paused) return;
       v.pause();
@@ -191,6 +200,35 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
       document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('blur', onBlur);
     };
+  }, []);
+
+  // Block keyboard skip / scrub shortcuts (Arrow keys, J, L, Home, End,
+  // PageUp, PageDown, number keys 0-9 which jump %). Space and K (play/pause)
+  // are still allowed because they don't seek the video.
+  useEffect(() => {
+    const blocked = new Set([
+      'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown',
+      'Home', 'End', 'PageUp', 'PageDown',
+      'KeyJ', 'KeyL',
+      'Digit0', 'Digit1', 'Digit2', 'Digit3', 'Digit4',
+      'Digit5', 'Digit6', 'Digit7', 'Digit8', 'Digit9',
+    ]);
+    const onKey = (e: KeyboardEvent) => {
+      // Don't interfere with input fields elsewhere on the page.
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (!blocked.has(e.code)) return;
+      // Only enforce when the video is the focus context — i.e. this player
+      // is mounted. We're inside the player component so this is always true.
+      e.preventDefault();
+      e.stopPropagation();
+      if (!completedRef.current) {
+        setShowNote('Skipping ahead is disabled — keep watching.');
+        setTimeout(() => setShowNote(null), 1400);
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
   }, []);
 
   const startedRef = useRef(false);
@@ -258,25 +296,6 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
     else v.pause();
   };
 
-  const toggleMute = () => {
-    const v = videoRef.current;
-    if (!v) return;
-    v.muted = !v.muted;
-    setMuted(v.muted);
-  };
-
-  const setVolume = (value: number) => {
-    const v = videoRef.current;
-    if (!v) return;
-    const next = Math.max(0, Math.min(1, value));
-    v.volume = next;
-    setVol(next);
-    if (next > 0 && v.muted) {
-      v.muted = false;
-      setMuted(false);
-    }
-  };
-
   if (!courseId) {
     return <div style={{padding:40}}><EmptyState icon="🎬" title="Pick a course" sub="Open a course from your dashboard to start watching." action={<Btn onClick={()=>onNav('courses')}>Browse courses</Btn>}/></div>;
   }
@@ -288,14 +307,14 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
 
   const switchLesson = (id: string) => {
     const idx = lessons.findIndex(l => l.id === id);
-    if (locks[idx]) { setShowNote('Locked — finish the previous video & quiz first.'); setTimeout(() => setShowNote(null), 2200); return; }
+    if (locks[idx]) { setShowNote('Locked — finish the previous video & assessment first.'); setTimeout(() => setShowNote(null), 2200); return; }
     setActiveId(id);
   };
 
   const watchedPct = DUR ? (furthest / DUR) * 100 : 0;
   const unlocked = watchedPct >= UNLOCK_THRESHOLD * 100;
   const goToQuiz = async () => {
-    // Save current watch position; do NOT mark completed — that happens on quiz pass.
+    // Save current watch position; do NOT mark completed — that happens on assessment pass.
     if (user && lesson) await saveLessonProgress(user.id, lesson.id, furthest, !!progress[lesson.id]?.completed);
     setState({ ...state, course: course.id, activeLesson: lesson.id });
     onNav('assessment');
@@ -325,7 +344,7 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
   return (
     <div style={{padding:'24px 36px 48px', animation:'fadeUp .3s ease-out', display:'grid', gridTemplateColumns:'1fr 340px', gap:20}}>
       {showComplianceModal && (
-        <ComplianceNoticeModal
+        <ComplianceWizardModal
           courseTitle={course.title}
           agreementRequired={agreementGate}
           onAcknowledge={acknowledgeCompliance}
@@ -340,7 +359,7 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
           <span style={{color:'#0A1F3D', fontWeight:600}}>Video {lessonIdx+1}</span>
         </div>
 
-        {/* Compliance step indicator: Watch → Quiz → Sign → Done */}
+        {/* Compliance step indicator: Watch → Assessment → Sign → Done */}
         <ComplianceStepIndicator
           videoDone={stepVideoDone}
           quizDone={stepQuizDone}
@@ -349,7 +368,7 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
           completed={stepCompleted}
         />
 
-        {/* Compliance reminder: video + quiz done but agreement still unsigned.
+        {/* Compliance reminder: video + assessment done but agreement still unsigned.
             The course is NOT marked completed in this state. */}
         {agreementGate && stepVideoDone && stepQuizDone && !stepAgreementDone && (
           <div style={{marginBottom:14, padding:'12px 16px', background:'#FFF6E6', border:'1px solid #FCD79B', borderRadius:10, display:'flex', alignItems:'center', gap:12}}>
@@ -357,7 +376,7 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
             <div style={{flex:1}}>
               <div style={{fontSize:13, fontWeight:700, color:'#9A6708'}}>Agreement signing — incomplete</div>
               <div style={{fontSize:12, color:'#9A6708', marginTop:2}}>
-                You've watched the video and passed the quiz, but the course will not be marked complete until you sign the agreement.
+                You've watched the video and passed the assessment, but the course will not be marked complete until you sign the agreement.
               </div>
             </div>
             <Btn size="sm" onClick={() => onNav('assessment')}>Sign agreement</Btn>
@@ -376,11 +395,14 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
               onEnded={flushProgress}
               onSeeking={enforceNoForwardSeek}
               onSeeked={() => { enforceNoForwardSeek(); flushProgress(); }}
+              onClick={togglePlay}
+              onContextMenu={(e) => e.preventDefault()}
               controls={false}
-              controlsList="nodownload noplaybackrate"
+              controlsList="nodownload noplaybackrate noremoteplayback"
               disablePictureInPicture
+              disableRemotePlayback
               playsInline
-              style={{width:'100%', height:'100%', background:'#000', objectFit:'contain'}}
+              style={{width:'100%', height:'100%', background:'#000', objectFit:'contain', cursor:'pointer'}}
             />
           ) : (
             <div style={{position:'absolute', inset:0, display:'grid', placeItems:'center', color:'#fff', fontSize:13}}>Loading video…</div>
@@ -390,13 +412,6 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
             <div style={{display:'flex', alignItems:'center', gap:8, padding:'5px 12px', background:'rgba(0,0,0,.55)', backdropFilter:'blur(8px)', borderRadius:999, color:'#fff', fontSize:11, fontWeight:600}}>
               <span style={{width:7, height:7, background:'#22D38A', borderRadius:99, boxShadow:'0 0 0 4px rgba(34,211,138,.18)'}}/> {Math.round(watchedPct)}% watched
             </div>
-            <button
-              onClick={() => setSpeed(s => (s === 1 ? 1.5 : 1))}
-              title="Playback speed"
-              style={{padding:'6px 10px', background:'rgba(0,0,0,.55)', backdropFilter:'blur(8px)', border:'1px solid rgba(255,255,255,.12)', borderRadius:999, color:'#fff', fontSize:11, fontWeight:800, cursor:'pointer'}}
-            >
-              {speed}x
-            </button>
             <button onClick={toggleFullscreen} title="Fullscreen" style={{padding:'6px 10px', background:'rgba(0,0,0,.55)', backdropFilter:'blur(8px)', border:0, borderRadius:999, color:'#fff', fontSize:11, fontWeight:700, cursor:'pointer', display:'flex', alignItems:'center', gap:6}}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M3 9V3h6M21 9V3h-6M3 15v6h6M21 15v6h-6"/></svg>
               Fullscreen
@@ -407,7 +422,7 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
             <div style={{position:'absolute', top:16, left:'50%', transform:'translateX(-50%)', padding:'9px 14px', background:'rgba(194,38,29,.95)', color:'#fff', borderRadius:8, fontSize:12, fontWeight:600}}>{showNote}</div>
           )}
 
-          {/* Custom controls (prevents forward scrubbing) */}
+          {/* Custom controls (no scrubbing forward, no speed switch, no volume control) */}
           <div style={{position:'absolute', left:0, right:0, bottom:0, padding:'10px 12px', background:'linear-gradient(to top, rgba(0,0,0,.65), rgba(0,0,0,0))'}}>
             <div style={{display:'flex', alignItems:'center', gap:10}}>
               <button onClick={togglePlay} style={{width:36, height:36, borderRadius:12, border:'1px solid rgba(255,255,255,.14)', background:'rgba(0,0,0,.45)', color:'#fff', cursor:'pointer', fontWeight:800}}>
@@ -447,18 +462,6 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
                   style={{position:'absolute', left:0, right:0, width:'100%', height:24, opacity:0, cursor:'pointer', margin:0}}
                 />
               </div>
-              <button onClick={toggleMute} style={{padding:'8px 10px', borderRadius:10, border:'1px solid rgba(255,255,255,.14)', background:'rgba(0,0,0,.45)', color:'#fff', cursor:'pointer', fontSize:12, fontWeight:800}}>
-                {muted || vol === 0 ? '🔇' : '🔊'}
-              </button>
-              <input
-                type="range"
-                min={0}
-                max={1}
-                step={0.05}
-                value={muted ? 0 : vol}
-                onChange={(e) => setVolume(Number(e.target.value))}
-                style={{width:84}}
-              />
             </div>
           </div>
         </div>
@@ -469,11 +472,11 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
               <Icon d="M6 3h9l4 4v14a2 2 0 01-2 2H6a2 2 0 01-2-2V5a2 2 0 012-2zM14 3v5h5M8 13l3 3 5-6" size={18}/>
             </div>
             <div style={{flex:1}}>
-              <div style={{fontSize:14, fontWeight:700, color:'#0A1F3D'}}>{unlocked ? 'Assessment unlocked' : `Watch ${Math.ceil(UNLOCK_THRESHOLD*100)}% to unlock the assessment`}</div>
+              <div style={{fontSize:14, fontWeight:700, color:'#0A1F3D'}}>{unlocked ? 'Assessment unlocked' : `Watch the full video (${Math.ceil(UNLOCK_THRESHOLD*100)}%) to unlock the assessment`}</div>
               <div style={{fontSize:12, color:'#5B6A7D', marginTop:2}}>{Math.round(watchedPct)}% watched · {fmt(furthest)} of {fmt(DUR)}</div>
               <div style={{marginTop:6}}><ProgressBar value={Math.min(100, Math.round(watchedPct))} height={4}/></div>
             </div>
-            <Btn disabled={!unlocked} onClick={goToQuiz}>{unlocked ? 'Start quiz →' : 'Locked'}</Btn>
+            <Btn disabled={!unlocked} onClick={goToQuiz}>{unlocked ? 'Start assessment →' : 'Locked'}</Btn>
           </Card>
         </div>
       </div>
@@ -504,7 +507,7 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
                     <div style={{fontSize:13, fontWeight: active?700:600, color: active?'#0A1F3D':'#3B4A5E'}}>{l.title}</div>
                     <div style={{fontSize:11, color:'#8A97A8', marginTop:2, display:'flex', gap:8, alignItems:'center'}}>
                       <span>{fmt(l.duration)}</span>
-                      {bestPass > 0 && <span style={{color:'#17A674', fontWeight:600}}>· Quiz {bestPass}%</span>}
+                      {bestPass > 0 && <span style={{color:'#17A674', fontWeight:600}}>· Assessment {bestPass}%</span>}
                     </div>
                     {wpct>0 && wpct<100 && <div style={{marginTop:6}}><ProgressBar value={Math.round(wpct)} height={3}/></div>}
                   </div>
@@ -522,34 +525,101 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
 // Compliance UI helpers
 // =============================================================================
 
-function ComplianceNoticeModal({ courseTitle, agreementRequired, onAcknowledge }: { courseTitle: string; agreementRequired: boolean; onAcknowledge: () => void }) {
-  const tips = [
-    { icon: '🎬', text: 'You must watch the full video — no skipping or scrubbing ahead.' },
-    { icon: '🎯', text: 'You must score 100% in the assessment to pass.' },
-    { icon: '🔁', text: 'Even one wrong answer means you must restart the entire quiz from the beginning.' },
-    ...(agreementRequired ? [{ icon: '✍️', text: 'You must read the entire agreement and sign it before completion.' }] : []),
-    { icon: '🛑', text: 'Switching tabs or windows will pause the video automatically.' },
+// 3-step compliance wizard shown the first time a learner opens a course.
+// Step 1 = Video Rule, Step 2 = Assessment Rule, Step 3 = Document Rule
+// (Step 3 is skipped when the course doesn't require an agreement signature.)
+function ComplianceWizardModal({ courseTitle, agreementRequired, onAcknowledge }: { courseTitle: string; agreementRequired: boolean; onAcknowledge: () => void }) {
+  type Step = { tag: string; title: string; rules: { icon: string; text: string }[] };
+  const allSteps: Step[] = [
+    {
+      tag: 'Step 1 — Video Rule',
+      title: 'Watch the entire video',
+      rules: [
+        { icon: '🎬', text: 'You must watch the full video — no fast-forwarding or skipping ahead.' },
+        { icon: '🖱️', text: 'Clicking anywhere inside the video will pause it.' },
+        { icon: '🛑', text: 'Switching tabs, windows, or minimising will pause the video automatically.' },
+        { icon: '⌨️', text: 'Keyboard skip shortcuts (arrow keys, J/L, number keys) are disabled.' },
+      ],
+    },
+    {
+      tag: 'Step 2 — Assessment Rule',
+      title: 'Score 100% on the assessment',
+      rules: [
+        { icon: '🎯', text: 'You must score 100% to pass the assessment.' },
+        { icon: '🔁', text: 'Even one wrong answer means the entire assessment restarts from the beginning.' },
+        { icon: '🙈', text: 'Correct answers will not be revealed — review the video carefully before retrying.' },
+      ],
+    },
   ];
+  if (agreementRequired) {
+    allSteps.push({
+      tag: 'Step 3 — Document Rule',
+      title: 'Read & sign the agreement',
+      rules: [
+        { icon: '📄', text: 'You must read the entire agreement document before signing.' },
+        { icon: '✍️', text: 'The course will not be marked complete until your signature is on file.' },
+      ],
+    });
+  }
+
+  const [stepIdx, setStepIdx] = useState(0);
+  const total = allSteps.length;
+  const isLast = stepIdx === total - 1;
+  const step = allSteps[stepIdx];
+
   return (
     <div style={{position:'fixed', inset:0, background:'rgba(10,31,61,.6)', zIndex:2000, display:'grid', placeItems:'center', padding:24}}>
-      <div style={{background:'#fff', borderRadius:14, maxWidth:520, width:'100%', overflow:'hidden', boxShadow:'0 20px 60px rgba(0,0,0,.3)'}}>
+      <div style={{background:'#fff', borderRadius:14, maxWidth:540, width:'100%', overflow:'hidden', boxShadow:'0 20px 60px rgba(0,0,0,.3)'}}>
         <div style={{padding:'24px 28px 20px', background:'linear-gradient(135deg,#0A1F3D,#0072FF)', color:'#fff'}}>
-          <div style={{fontSize:11, fontWeight:700, letterSpacing:'.12em', color:'#9EC9F0', textTransform:'uppercase'}}>Compliance training</div>
-          <div style={{fontSize:18, fontWeight:800, marginTop:6, letterSpacing:'-.01em'}}>{courseTitle}</div>
-          <div style={{fontSize:12, color:'#C8DDF4', marginTop:6}}>Please read the rules below before you begin.</div>
+          <div style={{fontSize:11, fontWeight:700, letterSpacing:'.12em', color:'#9EC9F0', textTransform:'uppercase'}}>{step.tag}</div>
+          <div style={{fontSize:18, fontWeight:800, marginTop:6, letterSpacing:'-.01em'}}>{step.title}</div>
+          <div style={{fontSize:12, color:'#C8DDF4', marginTop:6}}>{courseTitle}</div>
         </div>
-        <div style={{padding:'20px 28px'}}>
+
+        <div style={{padding:'22px 28px 8px'}}>
           <ul style={{margin:0, padding:0, listStyle:'none', display:'flex', flexDirection:'column', gap:12}}>
-            {tips.map((t, i) => (
+            {step.rules.map((r, i) => (
               <li key={i} style={{display:'flex', gap:12, fontSize:13, color:'#3B4A5E', lineHeight:1.5}}>
-                <span style={{fontSize:16, flexShrink:0}}>{t.icon}</span>
-                <span>{t.text}</span>
+                <span style={{fontSize:16, flexShrink:0}}>{r.icon}</span>
+                <span>{r.text}</span>
               </li>
             ))}
           </ul>
         </div>
-        <div style={{padding:'14px 28px 22px', display:'flex', justifyContent:'flex-end'}}>
-          <Btn size="lg" onClick={onAcknowledge}>I understand — let's begin</Btn>
+
+        {/* Progress dots */}
+        <div style={{display:'flex', justifyContent:'center', gap:8, padding:'16px 28px 4px'}}>
+          {allSteps.map((_, i) => (
+            <span
+              key={i}
+              style={{
+                width: i === stepIdx ? 22 : 8,
+                height: 8,
+                borderRadius: 99,
+                background: i === stepIdx ? '#0072FF' : i < stepIdx ? '#9EC9F0' : '#EEF2F7',
+                transition: 'all .25s',
+              }}
+            />
+          ))}
+        </div>
+
+        <div style={{padding:'14px 28px 22px', display:'flex', alignItems:'center', gap:10}}>
+          <Btn
+            variant="ghost"
+            size="lg"
+            disabled={stepIdx === 0}
+            onClick={() => setStepIdx((s) => Math.max(0, s - 1))}
+          >
+            ← Back
+          </Btn>
+          <div style={{flex:1, fontSize:11, color:'#8A97A8', fontWeight:600, textAlign:'center'}}>
+            {stepIdx + 1} of {total}
+          </div>
+          {isLast ? (
+            <Btn size="lg" onClick={onAcknowledge}>I Understand</Btn>
+          ) : (
+            <Btn size="lg" onClick={() => setStepIdx((s) => Math.min(total - 1, s + 1))}>Next →</Btn>
+          )}
         </div>
       </div>
     </div>
@@ -559,7 +629,7 @@ function ComplianceNoticeModal({ courseTitle, agreementRequired, onAcknowledge }
 function ComplianceStepIndicator({ videoDone, quizDone, agreementRequired, agreementDone, completed }: { videoDone: boolean; quizDone: boolean; agreementRequired: boolean; agreementDone: boolean; completed: boolean }) {
   const steps = [
     { label: 'Watch video', done: videoDone },
-    { label: 'Pass assessment', done: quizDone },
+    { label: 'Assessment', done: quizDone },
     ...(agreementRequired ? [{ label: 'Sign agreement', done: agreementDone }] : []),
     { label: 'Completed', done: completed },
   ];

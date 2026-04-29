@@ -66,7 +66,7 @@ export function ProgressPage() {
       <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:14, marginBottom:28}}>
         <SummaryTile label="Required complete" value={`${required.filter(c=>c.progress===100).length}/${required.length}`} tone="brand"/>
         <SummaryTile label="Courses completed" value={String(completed.length)} tone="default"/>
-        <SummaryTile label="Average quiz score" value={stat.totalAttempts ? `${stat.avgScore}%` : '—'} tone="success"/>
+        <SummaryTile label="Average assessment score" value={stat.totalAttempts ? `${stat.avgScore}%` : '—'} tone="success"/>
         <SummaryTile label="Total watch time" value={`${totalHrs}h`} tone="default"/>
       </div>
 

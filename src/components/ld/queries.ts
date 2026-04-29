@@ -1,4 +1,4 @@
-// Hooks for fetching the L&D data shapes from Supabase.
+// Hooks for fetching the Compliance Training data shapes from Supabase.
 import { useEffect, useState, useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import type { Course, Lesson, MCQItem, CourseWithProgress, LessonProgress } from "./data";

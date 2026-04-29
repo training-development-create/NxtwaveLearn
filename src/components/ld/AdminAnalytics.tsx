@@ -21,6 +21,11 @@ type ProfileMini = {
   id: string; full_name: string; email: string; employee_id: string | null;
   department: string | null; sub_department: string | null;
   manager_name: string | null; manager_email: string | null; manager_contact: string | null;
+  // Whether this employee has linked an auth.users row (i.e. has signed in
+  // at least once). Independent of whether they're enrolled in any specific
+  // course — a signed-in user not enrolled in the current course should NOT
+  // show "Pending login" in the manager team breakdown.
+  signed_in?: boolean;
 };
 // Internal helper to convert an employees row (with joined dept + manager)
 // into the ProfileMini shape the rest of this file expects.
@@ -395,7 +400,7 @@ export function AdminAnalytics() {
   }, [department, subDepartment, managerOptions, managerEmail]);
 
   if (courses.length === 0) {
-    return <div style={{padding:36}}><EmptyState icon="📊" title="No courses to analyze" sub="Once you publish a course in Upload & Quiz, analytics will start tracking it."/></div>;
+    return <div style={{padding:36}}><EmptyState icon="📊" title="No courses to analyze" sub="Once you publish a course in Upload & Assessment, analytics will start tracking it."/></div>;
   }
 
   // Per-video drill-down
@@ -514,10 +519,28 @@ export function AdminAnalytics() {
       {managerEmail !== 'all' && (() => {
         const learnerByAuthId = new Map(learners.map(l => [l.id, l]));
         // All employees under this manager (signed in or not), from profilesAll.
+        // IMPORTANT: "signed in" comes from p.signed_in (auth_user_id presence),
+        // NOT from whether they have a `learners` row. A signed-in user who
+        // isn't enrolled or hasn't started this course must still show as
+        // "Not started" — not "Pending login".
         const teamRows = profilesAll
           .filter(p => (p.manager_email || p.manager_name || 'Unassigned') === managerEmail)
           .map(p => {
             const lr = learnerByAuthId.get(p.id);
+            const hasLoggedIn = p.signed_in === true;
+            const completion = lr?.completion ?? 0;
+            // Status priority:
+            //   1. Never signed in → 'not-signed-in' (only when truly not logged in)
+            //   2. 100% complete → 'completed'
+            //   3. Some progress → 'in-progress'
+            //   4. Logged in but no progress → 'not-started'
+            const status = !hasLoggedIn
+              ? 'not-signed-in'
+              : completion === 100
+                ? 'completed'
+                : completion > 0
+                  ? 'in-progress'
+                  : 'not-started';
             return {
               id: p.id,
               name: p.full_name || p.email,
@@ -525,13 +548,12 @@ export function AdminAnalytics() {
               empId: p.employee_id || '—',
               department: p.department,
               subDepartment: p.sub_department,
-              completion: lr?.completion ?? 0,
+              completion,
               watchPct: lr?.watchPct ?? 0,
               score: lr?.score ?? 0,
               attempts: lr?.attempts ?? 0,
-              signedIn: !!lr,
-              status: lr ? (lr.completion === 100 ? 'completed' : lr.completion > 0 ? 'in-progress' : 'not-started')
-                         : 'not-signed-in',
+              signedIn: hasLoggedIn,
+              status,
             };
           })
           .sort((a, b) => b.completion - a.completion || a.name.localeCompare(b.name));
@@ -563,7 +585,7 @@ export function AdminAnalytics() {
                 <table style={{width:'100%', borderCollapse:'collapse'}}>
                   <thead>
                     <tr style={{background:'#FAFBFE'}}>
-                      {['Employee', 'Sub-dept', 'Completion', 'Quiz %', 'Status'].map(h => (
+                      {['Employee', 'Sub-dept', 'Completion', 'Assessment %', 'Status'].map(h => (
                         <th key={h} style={{padding:'10px 16px', textAlign:'left', fontSize:10, color:'#8A97A8', fontWeight:700, letterSpacing:'.08em', borderBottom:'1px solid #EEF2F7'}}>{h.toUpperCase()}</th>
                       ))}
                     </tr>
@@ -784,7 +806,7 @@ function EmployeeDetailModal({ user, onClose, focusCourseId }: { user: LearnerRo
                   <div style={{fontSize:14, fontWeight:700, color:'#002A4B'}}>{c.title}</div>
                   <div style={{fontSize:11, color:'#5B6A7D', marginTop:2}}>
                     {c.lessonsCompleted}/{c.lessonsTotal} videos · {fmt(c.totalWatched)} of {fmt(c.totalRuntime)} watched
-                    {c.avgScore > 0 && <> · avg quiz {c.avgScore}%</>}
+                    {c.avgScore > 0 && <> · avg assessment {c.avgScore}%</>}
                   </div>
                 </div>
                 <Chip color={c.status==='completed'?'#17A674':c.status==='in-progress'?'#E08A1E':'#8A97A8'}>
@@ -822,7 +844,7 @@ function EmployeeDetailModal({ user, onClose, focusCourseId }: { user: LearnerRo
                 <table style={{width:'100%', borderCollapse:'collapse'}}>
                   <thead>
                     <tr style={{background:'#fff'}}>
-                      {['Video','Watched','Of runtime','Quiz %','Attempts','Status'].map(h => (
+                      {['Video','Watched','Of runtime','Assessment %','Attempts','Status'].map(h => (
                         <th key={h} style={{padding:'8px 14px', textAlign:'left', fontSize:10, color:'#8A97A8', fontWeight:700, letterSpacing:'.08em', borderBottom:'1px solid #F1F4F9'}}>{h.toUpperCase()}</th>
                       ))}
                     </tr>
@@ -933,7 +955,7 @@ function PerLessonWatch({ lessonId, runtime, courseId, search, allowedUserIds, o
       <table style={{width:'100%', borderCollapse:'collapse'}}>
         <thead>
           <tr style={{background:'#FAFBFE'}}>
-            {['Employee','Emp ID','Watched','Of runtime','Quiz %','Attempts','Status'].map(h => (
+            {['Employee','Emp ID','Watched','Of runtime','Assessment %','Attempts','Status'].map(h => (
               <th key={h} style={{padding:'10px 16px', textAlign:'left', fontSize:10, color:'#8A97A8', fontWeight:700, letterSpacing:'.08em', borderBottom:'1px solid #EEF2F7'}}>{h.toUpperCase()}</th>
             ))}
           </tr>

@@ -3,12 +3,12 @@ import type { Profile } from "./auth";
 import { NotificationBell } from "./NotificationBell";
 
 export const NAV_LEARNER = [
-  { id:'courses', label:'My courses', icon:'M4 5a2 2 0 012-2h3l2 2h9a2 2 0 012 2v11a2 2 0 01-2 2H4V5z' },
+  { id:'courses', label:'My compliance courses', icon:'M4 5a2 2 0 012-2h3l2 2h9a2 2 0 012 2v11a2 2 0 01-2 2H4V5z' },
 ];
 export const NAV_ADMIN = [
   { id:'admin-analytics', label:'Analytics', icon:'M3 3v18h18M7 14l3-3 3 3 5-6' },
   { id:'admin-modules', label:'Modules', icon:'M4 6h16M4 12h16M4 18h10' },
-  { id:'admin-upload', label:'Upload & Quiz', icon:'M4 16v3a2 2 0 002 2h12a2 2 0 002-2v-3M12 4v13M6 10l6-6 6 6' },
+  { id:'admin-upload', label:'Upload & Assessment', icon:'M4 16v3a2 2 0 002 2h12a2 2 0 002-2v-3M12 4v13M6 10l6-6 6 6' },
   { id:'admin-admins', label:'Admins', icon:'M16 11a4 4 0 10-8 0 4 4 0 008 0zM2 21v-1a6 6 0 0112 0v1' },
 ];
 
@@ -22,7 +22,7 @@ export function Sidebar({ role, active, onNav, profile }: { role:'learner'|'admi
     <aside style={sb.wrap}>
       <div style={sb.logoWrap}>
         <img src="/assets/nxtwave-colored.svg" style={{height:24}} alt="NxtWave"/>
-        <div style={{fontSize:10, fontWeight:600, letterSpacing:'.1em', color:'#5B6A7D', marginTop:6, textTransform:'uppercase'}}>{role==='admin'?'L&D Admin':'Learning'}</div>
+        <div style={{fontSize:10, fontWeight:600, letterSpacing:'.1em', color:'#5B6A7D', marginTop:6, textTransform:'uppercase'}}>{role==='admin'?'Compliance Admin':'Compliance Training'}</div>
       </div>
       <nav style={{padding:'10px 10px', flex:1}}>
         {items.map(it=>(

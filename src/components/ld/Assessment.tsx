@@ -44,13 +44,13 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
   }, [user, state.course]);
 
   if (!state.course || !state.activeLesson) {
-    return <div style={{padding:40}}><EmptyState icon="🧭" title="No quiz selected" sub="Pick a video first." action={<Btn onClick={()=>onNav('courses')}>Back to courses</Btn>}/></div>;
+    return <div style={{padding:40}}><EmptyState icon="🧭" title="No assessment selected" sub="Pick a video first." action={<Btn onClick={()=>onNav('courses')}>Back to courses</Btn>}/></div>;
   }
   if (loading || !course || !lesson) {
     return <div style={{padding:40, color:'#5B6A7D', fontSize:13}}>Loading…</div>;
   }
   if (questions.length === 0) {
-    return <div style={{padding:40}}><EmptyState icon="📝" title="No quiz for this video" sub="Your L&D admin hasn't added questions for this lesson yet." action={<Btn onClick={()=>onNav('player')}>Back to video</Btn>}/></div>;
+    return <div style={{padding:40}}><EmptyState icon="📝" title="No assessment for this video" sub="Your Compliance admin hasn't added questions for this lesson yet." action={<Btn onClick={()=>onNav('player')}>Back to video</Btn>}/></div>;
   }
 
   if (stage === 'intro') {
@@ -62,7 +62,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
             <div style={{position:'relative'}}>
               <div style={{fontSize:11, fontWeight:600, letterSpacing:'.12em', color:'#7FDBFF', textTransform:'uppercase'}}>Assessment · {course.title}</div>
               <h2 style={{fontSize:30, color:'#fff', margin:'10px 0 8px', letterSpacing:'-.02em', fontWeight:700}}>{lesson.title}</h2>
-              <p style={{color:'#9EC9F0', fontSize:14, margin:0, lineHeight:1.55, maxWidth:540}}>Answer {questions.length} questions. <strong style={{color:'#fff'}}>Every answer must be correct (100%) to pass.</strong> Even one wrong answer means you must restart the full quiz from the beginning.</p>
+              <p style={{color:'#9EC9F0', fontSize:14, margin:0, lineHeight:1.55, maxWidth:540}}>Answer {questions.length} questions. <strong style={{color:'#fff'}}>Every answer must be correct (100%) to pass.</strong> Even one wrong answer means you must restart the full assessment from the beginning.</p>
             </div>
           </div>
           <div style={{padding:'24px 40px', display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:20, borderBottom:'1px solid #EEF2F7'}}>
@@ -75,12 +75,12 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
           </div>
           <div style={{padding:'22px 40px 28px'}}>
             <ul style={{margin:0, padding:0, listStyle:'none', display:'flex', flexDirection:'column', gap:8, fontSize:13, color:'#3B4A5E'}}>
-              {['You can flag questions and come back','Navigate freely between questions','Results are shared with your L&D admin','Even one wrong answer means you must restart the entire quiz from the beginning','You must answer every question correctly to pass'].map(s => (
+              {['You can flag questions and come back','Navigate freely between questions','Results are shared with your Compliance admin','Even one wrong answer means you must restart the entire assessment from the beginning','You must answer every question correctly to pass'].map(s => (
                 <li key={s} style={{display:'flex', gap:10}}><span style={{color:'#17A674'}}>✓</span>{s}</li>
               ))}
             </ul>
             <div style={{marginTop:22, display:'flex', gap:10}}>
-              <Btn size="lg" onClick={()=>setStage('quiz')}>Start quiz →</Btn>
+              <Btn size="lg" onClick={()=>setStage('quiz')}>Start assessment →</Btn>
               <Btn variant="ghost" size="lg" onClick={()=>onNav('player')}>Back to video</Btn>
             </div>
           </div>
@@ -142,7 +142,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
               <div style={{width:52, height:52, borderRadius:14, background:'rgba(255,255,255,.14)', display:'grid', placeItems:'center', fontSize:24}}>{pass ? '✓' : '!'}</div>
               <div style={{fontSize:11, fontWeight:600, letterSpacing:'.12em', color:pass?'#D9F4E6':'#7FDBFF', marginTop:18, textTransform:'uppercase'}}>{pass?'Passed':'Not yet passed'}</div>
               <div style={{fontSize:48, fontWeight:700, letterSpacing:'-.03em', marginTop:4, lineHeight:1}}>{pct}%</div>
-              <div style={{fontSize:13, color:pass?'#D9F4E6':'#C8DDF4', marginTop:6}}>{correct} of {questions.length} correct · {pass ? (nextLesson ? 'Next video unlocked' : 'Course complete') : `${wrongIndices.length} wrong — restart the full quiz to try again`}</div>
+              <div style={{fontSize:13, color:pass?'#D9F4E6':'#C8DDF4', marginTop:6}}>{correct} of {questions.length} correct · {pass ? (nextLesson ? 'Next video unlocked' : 'Course complete') : `${wrongIndices.length} wrong — restart the full assessment to try again`}</div>
             </div>
             <div style={{padding:'30px 40px 32px'}}>
               {/* Show only the final result + score; correct answers are intentionally
@@ -164,7 +164,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
               <div style={{marginTop:18, fontSize:12, color:'#5B6A7D'}}>
                 {pass
                   ? 'Great work — your completion is recorded.'
-                  : `You answered ${wrongIndices.length} question${wrongIndices.length === 1 ? '' : 's'} incorrectly. Review them below, then restart the entire quiz from the beginning — every question must be correct to pass.`}
+                  : `You answered ${wrongIndices.length} question${wrongIndices.length === 1 ? '' : 's'} incorrectly. Review them below, then restart the entire assessment from the beginning — every question must be correct to pass.`}
               </div>
               {!pass && wrongIndices.length > 0 && (
                 <div style={{marginTop:22, padding:'18px 20px', background:'#FFF7F6', border:'1px solid #FCE1DE', borderRadius:10}}>
@@ -208,7 +208,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
                     ? <Btn size="lg" onClick={() => setStage('agreement')}>Continue to agreement ✍️ →</Btn>
                     : <Btn size="lg" onClick={onNext}>{nextLesson ? 'Start next video →' : 'Back to courses →'}</Btn>
                 ) : (
-                  <Btn size="lg" onClick={onRetryAll}>Restart full quiz →</Btn>
+                  <Btn size="lg" onClick={onRetryAll}>Restart full assessment →</Btn>
                 )}
                 <Btn variant="ghost" size="lg" onClick={()=>onNav('courses')}>Back to courses</Btn>
               </div>
@@ -277,7 +277,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
     <div style={{padding:'24px 40px 48px', maxWidth:1180, animation:'fadeUp .3s'}}>
       <div style={{display:'flex', alignItems:'center', gap:16, marginBottom:20}}>
         <div>
-          <div style={{fontSize:11, fontWeight:600, color:'#8A97A8', letterSpacing:'.06em', textTransform:'uppercase'}}>Quiz · Video {lessonIdx+1} of {lessons.length}</div>
+          <div style={{fontSize:11, fontWeight:600, color:'#8A97A8', letterSpacing:'.06em', textTransform:'uppercase'}}>Assessment · Video {lessonIdx+1} of {lessons.length}</div>
           <h2 style={{fontSize:22, color:'#0A1F3D', margin:'4px 0 0', letterSpacing:'-.02em', fontWeight:700}}>{lesson.title}</h2>
         </div>
         <div style={{marginLeft:'auto', display:'flex', gap:10, alignItems:'center'}}>
@@ -330,7 +330,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
                 const current = i === idx;
                 const flag = flagged.has(oi);
                 return (
-                  <button key={oi} onClick={()=>setIdx(i)} title={`Q${oi+1} from full quiz`} style={{aspectRatio:'1/1', borderRadius:8, border: current?'2px solid #0072FF':'1px solid #EEF2F7', background: flag?'#FEEFD3':answered?'#E6F4FF':'#fff', color: flag?'#B8660F':answered?'#0072FF':'#5B6A7D', fontSize:13, fontWeight:700, cursor:'pointer'}}>{i+1}</button>
+                  <button key={oi} onClick={()=>setIdx(i)} title={`Q${oi+1} from full assessment`} style={{aspectRatio:'1/1', borderRadius:8, border: current?'2px solid #0072FF':'1px solid #EEF2F7', background: flag?'#FEEFD3':answered?'#E6F4FF':'#fff', color: flag?'#B8660F':answered?'#0072FF':'#5B6A7D', fontSize:13, fontWeight:700, cursor:'pointer'}}>{i+1}</button>
                 );
               })}
             </div>

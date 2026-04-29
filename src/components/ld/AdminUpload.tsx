@@ -3,6 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "./auth";
 import { Btn, Card, Chip, Icon } from "./ui";
 import type { Nav } from "./App";
+import { CsvAssignModal } from "./CsvAssign";
 
 const inputStyle: CSSProperties = { padding:'10px 12px', border:'1px solid #DDE4ED', borderRadius:8, fontSize:14, outline:'none', background:'#fff', fontFamily:'inherit' };
 
@@ -48,6 +49,12 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
   const [active, setActive] = useState(0);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // CSV assignment modal — only available for "existing course" mode (we need
+  // a real course_id to write course_assignments rows against). For new
+  // courses, the admin should use the Edit Assignment modal in Modules
+  // after publishing.
+  const [csvOpen, setCsvOpen] = useState(false);
 
   // ----- Assignment picker state -----
   type Dept = { id: string; name: string };
@@ -435,7 +442,7 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
       <div style={{display:'grid', gridTemplateColumns:'1fr 320px', gap:20}}>
         <div>
           <div style={{display:'flex', alignItems:'center', gap:10, marginBottom:20}}>
-            {([[1,'Course'],[2,'Video'],[3,'Quiz'],[4,'Publish']] as const).map(([n,l],i,arr) => (
+            {([[1,'Course'],[2,'Video'],[3,'Assessment'],[4,'Publish']] as const).map(([n,l],i,arr) => (
               <React.Fragment key={n}>
                 <button onClick={()=>setStep(n)} style={{display:'flex', alignItems:'center', gap:10, background:'transparent', border:0, cursor:'pointer', padding:0}}>
                   <div style={{width:32, height:32, borderRadius:99, background: step>=n?'linear-gradient(135deg,#00C6FF,#0072FF)':'#EEF2F7', color: step>=n?'#fff':'#8A97A8', display:'grid', placeItems:'center', fontWeight:800, fontSize:13}}>{step>n?'✓':n}</div>
@@ -519,7 +526,7 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
               </div>
               <div style={{padding:'14px 24px', borderTop:'1px solid #EEF2F7', display:'flex', justifyContent:'space-between'}}>
                 <Btn variant="ghost" onClick={()=>setStep(1)}>← Back</Btn>
-                <Btn onClick={()=>setStep(3)} disabled={!lessonTitle.trim() || !videoFile}>Next — Quiz →</Btn>
+                <Btn onClick={()=>setStep(3)} disabled={!lessonTitle.trim() || !videoFile}>Next — Assessment →</Btn>
               </div>
             </Card>
           )}
@@ -626,7 +633,7 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
                   <Summary label="Course" value={mode==='new' ? courseTitle : (existingCourses.find(c=>c.id===existingCourseId)?.title || '—')}/>
                   <Summary label="Video" value={lessonTitle}/>
                   <Summary label="Duration" value={`${Math.floor(videoDuration/60)}m ${videoDuration%60}s`}/>
-                  <Summary label="Quiz questions" value={`${questions.filter(qq=>qq.q.trim()).length}`}/>
+                  <Summary label="Assessment questions" value={`${questions.filter(qq=>qq.q.trim()).length}`}/>
                 </div>
 
                 {/* Optional agreement / policy PDF — gates course completion when set */}
@@ -666,11 +673,31 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
                     </div>
                   </div>
                 )}
+                {/* CSV bulk assignment — adds named learners on top of the picker scope.
+                    Available only when extending an existing course because we need a real
+                    course_id to write assignments against. */}
+                {mode === 'existing' && existingCourseId && (
+                  <div style={{marginBottom:14, padding:'12px 14px', background:'#F2F9FF', border:'1px solid #CCEAFF', borderRadius:10, display:'flex', alignItems:'center', gap:12}}>
+                    <div style={{fontSize:18}}>📥</div>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:13, fontWeight:700, color:'#0A1F3D'}}>Bulk-assign via CSV</div>
+                      <div style={{fontSize:11, color:'#5B6A7D', marginTop:2}}>Upload a Name / Email / Department CSV. We'll validate emails, dedupe, and only assign learners that exist in the directory.</div>
+                    </div>
+                    <Btn variant="ghost" size="sm" onClick={()=>setCsvOpen(true)}>Upload CSV</Btn>
+                  </div>
+                )}
                 {error && <div style={{padding:'10px 12px', background:'#FCE1DE', color:'#C2261D', borderRadius:8, fontSize:13, fontWeight:500, marginBottom:14}}>{error}</div>}
                 <div style={{display:'flex', gap:10}}>
                   <Btn variant="ghost" onClick={()=>setStep(3)}>← Back</Btn>
                   <Btn variant="success" size="lg" onClick={publish} disabled={saving || !assignmentValid}>{saving ? 'Publishing…' : 'Publish ✓'}</Btn>
                 </div>
+                {csvOpen && existingCourseId && (
+                  <CsvAssignModal
+                    courseId={existingCourseId}
+                    courseTitle={existingCourses.find(c => c.id === existingCourseId)?.title}
+                    onClose={()=>setCsvOpen(false)}
+                  />
+                )}
               </div>
             </Card>
           )}
@@ -690,7 +717,7 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
               • Every employee gets the course automatically<br/>
               • A notification fires to all learners<br/>
               • Watch duration tracked per video<br/>
-              • Quiz unlocks at 90% watch
+              • Assessment unlocks at 100% watch
             </div>
           </Card>
         </div>

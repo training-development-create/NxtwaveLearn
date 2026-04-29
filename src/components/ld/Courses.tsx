@@ -88,7 +88,7 @@ export function Courses({ onNav, initialQuery }: { onNav: Nav; initialQuery?: st
       {loading ? (
         <div style={{padding:40, color:'#5B6A7D', fontSize:13, textAlign:'center'}}>Loading courses…</div>
       ) : enrolled.length === 0 ? (
-        <EmptyState icon="📚" title="No courses yet" sub="Your L&D admin hasn't published any courses. Once they do, they'll appear here automatically."/>
+        <EmptyState icon="📚" title="No courses yet" sub="Your Compliance admin hasn't published any courses. Once they do, they'll appear here automatically."/>
       ) : filtered.length === 0 ? (
         <EmptyState icon="🔍" title="No matches" sub="Try a different filter or search term."/>
       ) : (

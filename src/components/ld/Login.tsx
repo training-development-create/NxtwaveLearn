@@ -28,7 +28,7 @@ export function Login() {
 
         <div style={{background:'#fff', border:'1px solid #EEF2F7', borderRadius:16, padding:'26px 22px', boxShadow:'0 10px 28px rgba(0,42,75,.06)'}}>
           <div style={{textAlign:'center', marginBottom:20}}>
-            <div style={{fontSize:18, fontWeight:800, color:'#0A1F3D'}}>Sign in to NxtWave L&D</div>
+            <div style={{fontSize:18, fontWeight:800, color:'#0A1F3D'}}>Sign in to NxtWave Compliance Training</div>
             <div style={{fontSize:13, color:'#5B6A7D', marginTop:6}}>
               Use your {ALLOWED_EMAIL_DOMAINS.map(d => '@' + d).join(' or ')} account
             </div>

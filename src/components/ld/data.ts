@@ -1,4 +1,4 @@
-// Shared types + small helpers used across the L&D portal.
+// Shared types + small helpers used across the Compliance Training Portal.
 // All real data is loaded from Supabase. This file only holds types & utilities.
 
 export type Course = {
@@ -50,7 +50,8 @@ export type CourseWithProgress = Course & {
 
 export const fmt = (s: number) => `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`;
 
-// Pass threshold (90% of video runtime) to unlock the assessment
-export const UNLOCK_THRESHOLD = 0.9;
+// Pass threshold (100% of video runtime) to unlock the assessment.
+// Compliance requires the learner to watch the full video before they can attempt the assessment.
+export const UNLOCK_THRESHOLD = 1.0;
 
 // (Avatar placeholders are no longer used — we render initials when avatar_url is empty.)

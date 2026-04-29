@@ -91,12 +91,12 @@ function Inner() {
       : (learnerPages[page] ?? learnerPages.courses);
 
   const titles: Record<string, [string, string]> = {
-    courses: ['My courses', 'All courses available to you'],
-    player: ['Now playing', 'Watch the full video to unlock the quiz'],
+    courses: ['My compliance courses', 'All compliance courses available to you'],
+    player: ['Now playing', 'Watch the full video to unlock the assessment'],
     assessment: ['Assessment', 'Answer all questions to continue'],
-    'admin-analytics': ['Analytics', 'Video watch & assessment activity'],
-    'admin-modules': ['Modules', 'Manage all courses & videos'],
-    'admin-upload': ['Upload & Quiz', 'Add a new training video and AI-parsed assessment'],
+    'admin-analytics': ['Analytics', 'Compliance video watch & assessment activity'],
+    'admin-modules': ['Modules', 'Manage all compliance courses & videos'],
+    'admin-upload': ['Upload & Assessment', 'Add a new compliance training video and AI-parsed assessment'],
     'admin-admins': ['Admins', 'Promote learners to admin'],
   };
   const fallbackTitleKey =
