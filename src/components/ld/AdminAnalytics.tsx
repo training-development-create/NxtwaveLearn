@@ -84,18 +84,23 @@ export function AdminAnalytics() {
   const [managerEmail, setManagerEmail] = useState<string>('all');
 
 
-  useEffect(() => {
-    (async () => {
-      const [{ data: cs }, { data: ls }] = await Promise.all([
-        supabase.from('courses').select('id, title').order('created_at', { ascending: true }),
-        supabase.from('lessons').select('id, title, course_id, duration_seconds').order('position', { ascending: true }),
-      ]);
-      setCourses(cs || []);
-      setLessons(ls || []);
-      if ((cs || []).length && !course) setCourse(cs![0].id);
-    })();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // Courses + lessons loader. Called on mount AND from the realtime channel
+  // when the admin deletes/edits a course or video so the sidebar dropdowns
+  // and the analytics scope refresh without a page reload.
+  const loadCoursesAndLessons = async () => {
+    const [{ data: cs }, { data: ls }] = await Promise.all([
+      supabase.from('courses').select('id, title').order('created_at', { ascending: true }),
+      supabase.from('lessons').select('id, title, course_id, duration_seconds').order('position', { ascending: true }),
+    ]);
+    setCourses(cs || []);
+    setLessons(ls || []);
+    if ((cs || []).length && !course) setCourse(cs![0].id);
+    // If the currently-selected course was deleted, fall back to the first one.
+    if (course && cs && !cs.some(c => c.id === course)) {
+      setCourse(cs[0]?.id ?? '');
+    }
+  };
+  useEffect(() => { loadCoursesAndLessons(); /* eslint-disable-next-line */ }, []);
 
   const courseLessons = lessons.filter(l => l.course_id === course);
   const lessonIds = courseLessons.map(l => l.id);
@@ -103,43 +108,49 @@ export function AdminAnalytics() {
 
   useEffect(() => { if (courseLessons.length) setVid(courseLessons[0].id); else setVid(''); /* eslint-disable-next-line */ }, [course, lessons.length]);
 
+  // Org snapshot — refreshed only when employees / departments / sub_departments
+  // change (rare). Holds all active employees joined with dept + manager.
+  // Without this split, the old loadStats was paging through 3000+ employee
+  // rows every 5 seconds (wasted bandwidth + slow renders).
+  type EmpAnalytics = EmployeeJoinRow & { id: string };
+  const employeesAllRef = useRef<EmpAnalytics[]>([]);
+  const [employeesLoadedAt, setEmployeesLoadedAt] = useState(0);
+
+  const loadEmployees = async () => {
+    const all: EmpAnalytics[] = [];
+    const pageSize = 1000;
+    for (let from = 0; ; from += pageSize) {
+      const { data, error } = await supabase
+        .from('employees')
+        .select('id, auth_user_id, email, name, employee_id, designation_name, departments:department_id(name), sub_departments:sub_department_id(name), manager:manager_id(name, email, contact)')
+        .eq('status', 'active')
+        .order('name', { ascending: true })
+        .range(from, from + pageSize - 1);
+      if (error) { console.warn('[AdminAnalytics] employee paging stopped:', error.message); break; }
+      if (!data || data.length === 0) break;
+      all.push(...(data as unknown as EmpAnalytics[]));
+      if (data.length < pageSize) break;
+    }
+    employeesAllRef.current = all;
+    setEmployeesLoadedAt(Date.now());
+  };
+
+  // Initial employees fetch + only-on-org-change refetch (via realtime).
+  useEffect(() => { loadEmployees(); }, []);
+
   const loadStats = async () => {
     if (!course) return;
 
-    // Fetch ALL active employees (signed in or not). The previous filter
-    // .not('auth_user_id', 'is', null) hid the ~3300 imported employees who
-    // haven't signed in yet, so dept/manager rollups undercounted dramatically.
-    // We also pull course_assignments + the assigned_employees RPC to scope
-    // analytics to "who this course is actually assigned to."
-    // Supabase JS caps responses at 1000 rows. With 3000+ employees the
-    // analytics rollups silently undercount (and managers' reports look
-    // smaller than they are). Page the employees query.
-    type EmpAnalytics = EmployeeJoinRow & { id: string };
-    const fetchAllEmployees = async (): Promise<EmpAnalytics[]> => {
-      const all: EmpAnalytics[] = [];
-      const pageSize = 1000;
-      for (let from = 0; ; from += pageSize) {
-        const { data, error } = await supabase
-          .from('employees')
-          .select('id, auth_user_id, email, name, employee_id, designation_name, departments:department_id(name), sub_departments:sub_department_id(name), manager:manager_id(name, email, contact)')
-          .eq('status', 'active')
-          .order('name', { ascending: true })
-          .range(from, from + pageSize - 1);
-        if (error) { console.warn('[AdminAnalytics] employee paging stopped:', error.message); break; }
-        if (!data || data.length === 0) break;
-        all.push(...(data as unknown as EmpAnalytics[]));
-        if (data.length < pageSize) break;
-      }
-      return all;
-    };
-
-    const [{ data: enrolls }, { data: prog }, { data: attempts }, employeesAll, { data: assignedRows }] = await Promise.all([
+    // Fast path: course-scoped queries only. Employees list comes from the
+    // cached ref (refreshed by a separate effect when employees/depts/etc.
+    // change). This is what makes refreshes feel instant.
+    const [{ data: enrolls }, { data: prog }, { data: attempts }, { data: assignedRows }] = await Promise.all([
       supabase.from('enrollments').select('user_id').eq('course_id', course).range(0, 9999),
       lessonIds.length ? supabase.from('lesson_progress').select('user_id, lesson_id, watched_seconds, completed').in('lesson_id', lessonIds).range(0, 99999) : Promise.resolve({ data: [] as { user_id: string; lesson_id: string; watched_seconds: number; completed: boolean }[] }),
       lessonIds.length ? supabase.from('quiz_attempts').select('user_id, lesson_id, score, total, passed').in('lesson_id', lessonIds).range(0, 99999) : Promise.resolve({ data: [] as { user_id: string; lesson_id: string; score: number; total: number; passed: boolean }[] }),
-      fetchAllEmployees(),
       supabase.rpc('assigned_employees', { _course_id: course }),
     ]);
+    const employeesAll = employeesAllRef.current;
 
     // Build a profile list keyed by employees.id (the org id) AND a separate
     // map keyed by auth_user_id (for joining to lesson_progress / quiz_attempts).
@@ -281,28 +292,66 @@ export function AdminAnalytics() {
   const departmentStats = stats.dStats;
   const managerStats = stats.mStats;
 
-  // Live updates: refetch when watch progress / quiz attempts / enrollments change.
+  // Live updates — debounced so realtime bursts don't trigger 10 fetches.
+  // Listens to ALL tables that affect what analytics shows:
+  //   - lesson_progress / quiz_attempts / enrollments → learner progress
+  //   - course_assignments → admin re-assigns the course (was missing before)
+  //   - lessons / courses → admin deletes a video / course (was missing before)
+  // employees is handled by a separate effect (it refreshes the org snapshot
+  // ref, not loadStats — different cadence).
   useEffect(() => {
     if (!course) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const debouncedLoad = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => loadStats(), 600);
+    };
+    // course/lesson list refresh is more expensive but needed for sidebar
+    // dropdowns and to re-evaluate which lessons belong to the current course.
+    const debouncedRefreshAll = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => { loadCoursesAndLessons(); loadStats(); }, 600);
+    };
     const ch = supabase
       .channel(`admin-analytics-${course}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'lesson_progress' }, () => loadStats())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'quiz_attempts' }, () => loadStats())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'enrollments' }, () => loadStats())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'lesson_progress' }, debouncedLoad)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'quiz_attempts' }, debouncedLoad)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'enrollments' }, debouncedLoad)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'course_assignments' }, debouncedLoad)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'lessons' }, debouncedRefreshAll)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'courses' }, debouncedRefreshAll)
       .subscribe();
-    return () => { supabase.removeChannel(ch); };
+    return () => { if (timer) clearTimeout(timer); supabase.removeChannel(ch); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [course, lessons]);
 
-  // Fallback polling ensures analytics updates even if realtime misses events.
+  // Org-snapshot live refresh — debounced separately because employees/depts
+  // change much less often, and the fetch is heavy (paged).
   useEffect(() => {
-    if (!course) return;
-    const id = setInterval(() => loadStats(), 5000);
-    return () => clearInterval(id);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [course, lessons]);
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const debouncedRefreshOrg = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => loadEmployees(), 1500);
+    };
+    const ch = supabase
+      .channel('admin-analytics-org')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'employees' }, debouncedRefreshOrg)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'departments' }, debouncedRefreshOrg)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sub_departments' }, debouncedRefreshOrg)
+      .subscribe();
+    return () => { if (timer) clearTimeout(timer); supabase.removeChannel(ch); };
+  }, []);
 
-  const filtered = learners.filter(l => {
+  // When the org snapshot updates, recompute course stats so dropdowns +
+  // rollups reflect the change immediately.
+  useEffect(() => {
+    if (course && employeesLoadedAt > 0) loadStats();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [employeesLoadedAt]);
+
+  // Memoized — these previously rebuilt on every render (and with 3000+
+  // profiles + every keystroke in the search box, that was the perf hit).
+  const filtered = useMemo(() => learners.filter(l => {
     if (department !== 'all' && (l.department || 'Unassigned') !== department) return false;
     if (subDepartment !== 'all' && (l.subDepartment || 'Unassigned') !== subDepartment) return false;
     if (managerEmail !== 'all') {
@@ -311,24 +360,24 @@ export function AdminAnalytics() {
     }
     if (search && !`${l.name} ${l.empId} ${l.email}`.toLowerCase().includes(search.toLowerCase())) return false;
     return true;
-  });
+  }), [learners, department, subDepartment, managerEmail, search]);
 
-  // Mutually Narrowing Filter Options
-  const departmentOptions = Array.from(new Set(
+  // Mutually narrowing filter options — also memoized.
+  const departmentOptions = useMemo(() => Array.from(new Set(
     profilesAll
       .filter(p => (subDepartment === 'all' || (p.sub_department || 'Unassigned') === subDepartment))
       .filter(p => (managerEmail === 'all' || (p.manager_email || p.manager_name || 'Unassigned') === managerEmail))
       .map(p => p.department || 'Unassigned')
-  )).sort();
+  )).sort(), [profilesAll, subDepartment, managerEmail]);
 
-  const subDepartmentOptions = Array.from(new Set(
+  const subDepartmentOptions = useMemo(() => Array.from(new Set(
     profilesAll
       .filter(p => (department === 'all' || (p.department || 'Unassigned') === department))
       .filter(p => (managerEmail === 'all' || (p.manager_email || p.manager_name || 'Unassigned') === managerEmail))
       .map(p => p.sub_department || 'Unassigned'),
-  )).sort();
+  )).sort(), [profilesAll, department, managerEmail]);
 
-  const managerOptions = Array.from(new Map(
+  const managerOptions = useMemo(() => Array.from(new Map(
     profilesAll
       .filter(p => (department === 'all' || (p.department || 'Unassigned') === department))
       .filter(p => (subDepartment === 'all' || (p.sub_department || 'Unassigned') === subDepartment))
@@ -336,7 +385,8 @@ export function AdminAnalytics() {
         const key = p.manager_email || p.manager_name || 'Unassigned';
         return [key, { key, label: p.manager_name || p.manager_email || 'Unassigned' }];
       }),
-  ).values()).sort((a, b) => a.label.localeCompare(b.label));
+  ).values()).sort((a, b) => a.label.localeCompare(b.label)),
+    [profilesAll, department, subDepartment]);
 
   useEffect(() => {
     if (managerEmail === 'all') return;
