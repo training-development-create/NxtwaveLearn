@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Btn, Card, Chip, ProgressBar, Avatar, EmptyState } from "./ui";
 import { fmt } from "./data";
@@ -86,8 +86,7 @@ export function AdminAnalytics() {
   const [subDepartment, setSubDepartment] = useState<string>('all');
   const [managerEmail, setManagerEmail] = useState<string>('all');
   const [designation, setDesignation] = useState<string>('all');
-  const [departmentStats, setDepartmentStats] = useState<{ department: string; total: number; completed: number; pct: number }[]>([]);
-  const [managerStats, setManagerStats] = useState<ManagerRow[]>([]);
+
 
   useEffect(() => {
     (async () => {
