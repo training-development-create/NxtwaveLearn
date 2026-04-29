@@ -103,13 +103,13 @@ export function AdminAnalytics() {
   }, []);
 
   const courseLessons = lessons.filter(l => l.course_id === course);
+  const lessonIds = courseLessons.map(l => l.id);
+  const totalRuntime = courseLessons.reduce((s, l) => s + (l.duration_seconds || 0), 0);
+
   useEffect(() => { if (courseLessons.length) setVid(courseLessons[0].id); else setVid(''); /* eslint-disable-next-line */ }, [course, lessons.length]);
 
   const loadStats = async () => {
     if (!course) return;
-    const lessonsForCourse = lessons.filter(l => l.course_id === course);
-    const lessonIds = lessonsForCourse.map(l => l.id);
-    const totalRuntime = lessonsForCourse.reduce((s, l) => s + (l.duration_seconds || 0), 0);
 
     // Fetch ALL active employees (signed in or not). The previous filter
     // .not('auth_user_id', 'is', null) hid the ~3300 imported employees who
@@ -239,8 +239,7 @@ export function AdminAnalytics() {
     }).filter(Boolean) as LearnerRow[];
     rows.sort((a, b) => b.watchSec - a.watchSec);
     setLearners(rows);
-
-  }, [course, lessons]);
+  };
 
   useEffect(() => {
     loadStats();
