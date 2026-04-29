@@ -248,6 +248,22 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
   const q = questions[active];
   const update = (patch: Partial<Q>) => { const c=[...questions]; c[active]={...c[active], ...patch}; setQuestions(c); };
   const updateOpt = (i: number, v: string) => { const opts=[...q.options]; opts[i]=v; update({ options: opts }); };
+  // Allow editors to grow/shrink the option list (Yes/No → 6-way). Mirrors the
+  // 2..6 bounds enforced by the parse-quiz edge function.
+  const MIN_OPTS = 2;
+  const MAX_OPTS = 6;
+  const addOpt = () => {
+    if (!q || q.options.length >= MAX_OPTS) return;
+    update({ options: [...q.options, ''] });
+  };
+  const removeOpt = (i: number) => {
+    if (!q || q.options.length <= MIN_OPTS) return;
+    const opts = q.options.filter((_, idx) => idx !== i);
+    let correct = q.correct;
+    if (i === q.correct) correct = 0;            // removed the correct one — fall back to first
+    else if (i < q.correct) correct = q.correct - 1; // shift index left
+    update({ options: opts, correct });
+  };
   const removeQ = (idx: number) => {
     const c = questions.filter((_,i) => i !== idx); setQuestions(c);
     if (active >= c.length) setActive(Math.max(0, c.length - 1));
@@ -663,15 +679,29 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
                         {q && <>
                           <Label>Question</Label>
                           <textarea rows={2} value={q.q} onChange={e=>update({q:e.target.value})} style={{...inputStyle, width:'100%', fontSize:14, color:'#002A4B', resize:'vertical'}}/>
-                          <Label style={{marginTop:12}}>Options · <span style={{color:'#17A674'}}>green = correct</span></Label>
+                          <Label style={{marginTop:12}}>Options · <span style={{color:'#17A674'}}>green = correct</span> · <span style={{color:'#8A97A8', fontWeight:500}}>{q.options.length} option{q.options.length===1?'':'s'} (2–6 allowed)</span></Label>
                           <div style={{display:'flex', flexDirection:'column', gap:6}}>
                             {q.options.map((opt,i) => (
                               <div key={i} style={{display:'flex', gap:8, padding:'8px 10px', border:`1.5px solid ${q.correct===i?'#17A674':'#EEF2F7'}`, background: q.correct===i?'#F0FCF5':'#fff', borderRadius:8, alignItems:'center'}}>
                                 <button onClick={()=>update({correct:i})} style={{width:22, height:22, borderRadius:99, background: q.correct===i?'#17A674':'#EEF2F7', color: q.correct===i?'#fff':'#8A97A8', border:0, cursor:'pointer', fontSize:11, fontWeight:800, flexShrink:0}}>{q.correct===i?'✓':String.fromCharCode(65+i)}</button>
                                 <input value={opt} onChange={e=>updateOpt(i, e.target.value)} style={{flex:1, border:0, outline:'none', fontSize:13, background:'transparent'}}/>
+                                <button
+                                  type="button"
+                                  onClick={()=>removeOpt(i)}
+                                  disabled={q.options.length <= MIN_OPTS}
+                                  title={q.options.length <= MIN_OPTS ? `Minimum ${MIN_OPTS} options required` : 'Remove this option'}
+                                  style={{width:24, height:24, borderRadius:6, border:0, background:'transparent', color: q.options.length <= MIN_OPTS ? '#D6DCE5' : '#BCC6D3', cursor: q.options.length <= MIN_OPTS ? 'not-allowed' : 'pointer', fontSize:14, flexShrink:0}}
+                                >✕</button>
                               </div>
                             ))}
                           </div>
+                          {q.options.length < MAX_OPTS && (
+                            <button
+                              type="button"
+                              onClick={addOpt}
+                              style={{marginTop:8, padding:'8px 12px', background:'#F2F9FF', border:'1.5px dashed #CCEAFF', color:'#0072FF', borderRadius:8, fontSize:12, fontWeight:700, cursor:'pointer', width:'100%'}}
+                            >+ Add option ({q.options.length}/{MAX_OPTS})</button>
+                          )}
                         </>}
                       </div>
                     </div>

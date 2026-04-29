@@ -57,9 +57,18 @@ const sb: Record<string, CSSProperties> = {
   userBlock: { margin:'0 14px 10px', padding:'10px 12px', display:'flex', alignItems:'center', gap:10, background:'#F7F9FC', borderRadius:10, border:'1px solid #EEF2F7' },
 };
 
-export function Topbar({ title, subtitle, children, profile }: { title:string; subtitle?:string; children?:ReactNode; profile?: Profile }) {
+export function Topbar({ title, subtitle, children, profile, onBack }: { title:string; subtitle?:string; children?:ReactNode; profile?: Profile; onBack?: () => void }) {
   return (
     <header style={{ display:'flex', alignItems:'center', gap:16, padding:'22px 36px 18px', borderBottom:'1px solid #EEF2F7', background:'#fff', position:'sticky', top:0, zIndex:3 }}>
+      {onBack && (
+        <button
+          onClick={onBack}
+          aria-label="Go back"
+          style={{display:'inline-flex', alignItems:'center', gap:6, padding:'8px 14px', background:'#F2F9FF', border:'1px solid #CCEAFF', color:'#0072FF', borderRadius:8, fontSize:13, fontWeight:700, cursor:'pointer'}}
+        >
+          ← Back
+        </button>
+      )}
       <div>
         <h1 style={{fontSize:26, color:'#002A4B', letterSpacing:'-.02em', margin:0, fontWeight:800}}>{title}</h1>
         {subtitle && <div style={{color:'#5B6A7D', fontSize:14, marginTop:4}}>{subtitle}</div>}

@@ -106,10 +106,25 @@ function Inner() {
   const [t, s] = titles[fallbackTitleKey] || ['', ''];
 
   if (role === 'learner') {
+    // Back button: where to go from the current page. Courses is the "home"
+    // for learners, so it has no back button.
+    const backTarget: string | null =
+      page === 'assessment' ? 'player' :
+      page === 'player' ? 'courses' :
+      null;
     return (
       <div style={{minHeight:'100vh', background:'#F7F9FC'}}>
         <header style={{position:'sticky', top:0, zIndex:5, background:'#fff', borderBottom:'1px solid #EEF2F7'}}>
           <div style={{width:'100%', padding:'14px 24px', display:'flex', alignItems:'center', gap:12}}>
+            {backTarget && (
+              <button
+                onClick={() => nav(backTarget)}
+                style={{display:'inline-flex', alignItems:'center', gap:6, padding:'6px 12px', background:'#F2F9FF', border:'1px solid #CCEAFF', color:'#0072FF', borderRadius:8, fontSize:13, fontWeight:700, cursor:'pointer'}}
+                aria-label="Go back"
+              >
+                ← Back
+              </button>
+            )}
             <img src="/assets/nxtwave-colored.svg" style={{height:22}} alt="NxtWave"/>
             <div style={{marginLeft:'auto', display:'flex', alignItems:'center', gap:12}}>
               <div style={{textAlign:'right', minWidth:0, maxWidth:280}}>
@@ -147,7 +162,12 @@ function Inner() {
         }}
       />
       <main style={{flex:1, background:'#F7F9FC', minWidth:0}}>
-        <Topbar title={t} subtitle={s} profile={profile}>
+        <Topbar
+          title={t}
+          subtitle={s}
+          profile={profile}
+          onBack={page !== 'admin-analytics' ? () => nav('admin-analytics') : undefined}
+        >
           {null}
         </Topbar>
         <ErrorBoundary>{current}</ErrorBoundary>

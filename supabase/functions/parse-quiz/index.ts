@@ -118,6 +118,11 @@ async function inflateRaw(data: Uint8Array, compressed: boolean): Promise<Uint8A
 
 type ParsedQuestion = { q: string; options: string[]; correct: number; hint: string };
 
+// Accept questions with 2 to 6 options (covers Yes/No, True/False, 3-way,
+// standard MCQ-4, and longer answer sets). Truncate to 6 to keep UI sane.
+const MIN_OPTIONS = 2;
+const MAX_OPTIONS = 6;
+
 function normalizeQuestions(input: unknown): ParsedQuestion[] {
   if (!Array.isArray(input)) return [];
   return input
@@ -125,12 +130,13 @@ function normalizeQuestions(input: unknown): ParsedQuestion[] {
       const obj = item as Record<string, unknown>;
       const q = typeof obj.q === "string" ? obj.q.trim() : "";
       const options = Array.isArray(obj.options)
-        ? obj.options.map((o) => String(o ?? "").trim()).filter(Boolean).slice(0, 4)
+        ? obj.options.map((o) => String(o ?? "").trim()).filter(Boolean).slice(0, MAX_OPTIONS)
         : [];
       const correctRaw = Number(obj.correct);
-      const correct = Number.isFinite(correctRaw) ? Math.max(0, Math.min(3, Math.floor(correctRaw))) : 0;
+      const maxIdx = Math.max(0, options.length - 1);
+      const correct = Number.isFinite(correctRaw) ? Math.max(0, Math.min(maxIdx, Math.floor(correctRaw))) : 0;
       const hint = typeof obj.hint === "string" ? obj.hint : "";
-      if (!q || options.length !== 4) return null;
+      if (!q || options.length < MIN_OPTIONS) return null;
       return { q, options, correct, hint };
     })
     .filter((v): v is ParsedQuestion => Boolean(v));
@@ -195,8 +201,15 @@ async function callGemini(parts: unknown[]): Promise<ParsedQuestion[]> {
 
   const geminiPrompt = `${SYSTEM}
 
-Return ONLY valid JSON matching this shape:
-{"questions":[{"q":"string","options":["a","b","c","d"],"correct":0,"hint":""}]}`;
+Return ONLY valid JSON matching this shape (the options array can have 2 to 6 entries — preserve the natural number of options for each question):
+{"questions":[{"q":"string","options":["option text", "..."],"correct":0,"hint":""}]}
+
+Examples of valid option shapes:
+- Yes/No:        ["Yes","No"]
+- True/False:    ["True","False"]
+- 3-way:         ["Always","Sometimes","Never"]
+- Standard MCQ:  ["A","B","C","D"]
+- Long-form:     ["Option 1","Option 2","Option 3","Option 4","Option 5"]`;
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
 
@@ -252,12 +265,26 @@ Return ONLY valid JSON matching this shape:
   // (unreachable)
 }
 
-const SYSTEM = `You are an exam parser. Extract every multiple-choice question from the provided document.
+const SYSTEM = `You are an exam parser. Extract every question from the provided document and return it in a structured form.
+
 For each question, identify:
-- the question text (no numbering prefix),
-- exactly 4 answer options (pad with plausible distractors only if the source has fewer; otherwise truncate to the first 4),
-- the 0-based index of the correct option,
+- the question text (no numbering prefix, no "Q1." / "1)" etc.),
+- the answer options EXACTLY as written in the source — DO NOT invent extra options and DO NOT drop any. Preserve the natural option count, which may be 2, 3, 4, 5 or 6:
+    * Yes/No questions → ["Yes","No"]
+    * True/False questions → ["True","False"]
+    * Three-way questions → 3 options
+    * Standard MCQs → 4 options
+    * Longer answer sets → up to 6 options
+  Never pad with made-up distractors. Never collapse multiple options into one.
+- the 0-based index of the correct option. Infer the correct answer from any of the following signals in the source:
+    * an explicit "Answer:", "Correct:", "Ans:" line,
+    * a bolded / underlined / highlighted / asterisked option,
+    * a "(correct)" / "✓" marker next to an option,
+    * an answer key at the end of the document,
+    * if no marker is present, use your understanding of the topic to pick the best answer.
 - an optional one-line hint (empty string if none).
+
+Treat Yes/No, True/False and any single-best-answer questions as valid — do NOT skip them.
 Return ONLY structured data via the provided tool. Never include markdown, prose, or commentary.`;
 
 const TOOL = {
@@ -274,8 +301,11 @@ const TOOL = {
             type: "object",
             properties: {
               q: { type: "string" },
-              options: { type: "array", items: { type: "string" }, minItems: 4, maxItems: 4 },
-              correct: { type: "integer", minimum: 0, maximum: 3 },
+              // 2..6 options — covers Yes/No, True/False, 3-way, MCQ-4 and long-form.
+              options: { type: "array", items: { type: "string" }, minItems: 2, maxItems: 6 },
+              // 0-based index into options. Upper bound is enforced server-side
+              // against the actual options.length in normalizeQuestions.
+              correct: { type: "integer", minimum: 0, maximum: 5 },
               hint: { type: "string" },
             },
             required: ["q", "options", "correct", "hint"],
