@@ -84,6 +84,7 @@ export function AdminAnalytics() {
   // Department / manager analytics state.
   const [profilesAll, setProfilesAll] = useState<ProfileMini[]>([]);
   const progArrRef = useRef<{ user_id: string; lesson_id: string; watched_seconds: number; completed: boolean }[]>([]);
+  const attArrRef = useRef<{ user_id: string; lesson_id: string; score: number; total: number; passed: boolean }[]>([]);
   const [department, setDepartment] = useState<string>('all');
   const [subDepartment, setSubDepartment] = useState<string>('all');
   const [managerEmail, setManagerEmail] = useState<string>('all');
@@ -200,6 +201,7 @@ export function AdminAnalytics() {
     const progArr = (prog || []) as { user_id: string; lesson_id: string; watched_seconds: number; completed: boolean }[];
     progArrRef.current = progArr;
     const attArr = (attempts || []) as { user_id: string; lesson_id: string; score: number; total: number; passed: boolean }[];
+    attArrRef.current = attArr;
 
     const totalWatchSec = progArr.reduce((s, p) => s + (p.watched_seconds || 0), 0);
     const denom = (totalRuntime || 1) * (enrolledIds.size || 1);
@@ -523,22 +525,38 @@ export function AdminAnalytics() {
         // NOT from whether they have a `learners` row. A signed-in user who
         // isn't enrolled or hasn't started this course must still show as
         // "Not started" — not "Pending login".
+        // Progress is recomputed directly from progArrRef / attArrRef so
+        // employees who have lesson_progress rows but aren't yet in the
+        // `enrollments` table still see their real watch %, completion, and
+        // assessment score (previously they were stuck at 0%).
         const teamRows = profilesAll
           .filter(p => (p.manager_email || p.manager_name || 'Unassigned') === managerEmail)
           .map(p => {
             const lr = learnerByAuthId.get(p.id);
             const hasLoggedIn = p.signed_in === true;
-            const completion = lr?.completion ?? 0;
+
+            const userProg = progArrRef.current.filter(pr => pr.user_id === p.id);
+            const userAtt = attArrRef.current.filter(a => a.user_id === p.id);
+            const watchSec = userProg.reduce((s, pr) => s + (pr.watched_seconds || 0), 0);
+            const watchPct = totalRuntime ? Math.min(100, Math.round((watchSec / totalRuntime) * 100)) : (lr?.watchPct ?? 0);
+            const completion = lessonIds.length
+              ? Math.round((userProg.filter(pr => pr.completed && lessonIds.includes(pr.lesson_id)).length / lessonIds.length) * 100)
+              : (lr?.completion ?? 0);
+            const score = userAtt.length
+              ? Math.round(userAtt.reduce((s, a) => s + (a.total ? (a.score / a.total) * 100 : 0), 0) / userAtt.length)
+              : (lr?.score ?? 0);
+            const attempts = userAtt.length || (lr?.attempts ?? 0);
+
             // Status priority:
             //   1. Never signed in → 'not-signed-in' (only when truly not logged in)
             //   2. 100% complete → 'completed'
-            //   3. Some progress → 'in-progress'
+            //   3. Some progress (watch or completion) → 'in-progress'
             //   4. Logged in but no progress → 'not-started'
             const status = !hasLoggedIn
               ? 'not-signed-in'
               : completion === 100
                 ? 'completed'
-                : completion > 0
+                : (completion > 0 || watchSec > 0)
                   ? 'in-progress'
                   : 'not-started';
             return {
@@ -548,10 +566,14 @@ export function AdminAnalytics() {
               empId: p.employee_id || '—',
               department: p.department,
               subDepartment: p.sub_department,
+              managerName: p.manager_name,
+              managerEmail: p.manager_email,
+              managerContact: p.manager_contact,
+              watchSec,
               completion,
-              watchPct: lr?.watchPct ?? 0,
-              score: lr?.score ?? 0,
-              attempts: lr?.attempts ?? 0,
+              watchPct,
+              score,
+              attempts,
               signedIn: hasLoggedIn,
               status,
             };
@@ -591,17 +613,43 @@ export function AdminAnalytics() {
                     </tr>
                   </thead>
                   <tbody>
-                    {teamRows.map(r => (
+                    {teamRows.map(r => {
+                      // Always allow opening the profile drawer — even if the
+                      // employee hasn't signed in or has no enrollments row.
+                      // Use the existing learner row when present so the modal
+                      // gets full data; otherwise synthesize one from teamRow.
+                      const openProfile = () => {
+                        const existing = learnerByAuthId.get(r.id);
+                        const fallback: LearnerRow = {
+                          id: r.id,
+                          name: r.name,
+                          email: r.email,
+                          empId: r.empId,
+                          department: r.department,
+                          subDepartment: r.subDepartment,
+                          managerName: r.managerName,
+                          managerEmail: r.managerEmail,
+                          managerContact: r.managerContact,
+                          watchSec: r.watchSec,
+                          watchPct: r.watchPct,
+                          completion: r.completion,
+                          score: r.score,
+                          attempts: r.attempts,
+                          status: r.status === 'completed' ? 'active' : r.status === 'in-progress' ? 'at-risk' : 'inactive',
+                        };
+                        setDetailUser(existing || fallback);
+                      };
+                      return (
                       <tr
                         key={r.id}
-                        onClick={r.signedIn ? () => setDetailUser(learnerByAuthId.get(r.id) as LearnerRow) : undefined}
-                        style={{borderBottom:'1px solid #F7F9FC', cursor: r.signedIn ? 'pointer' : 'default', opacity: r.status === 'not-signed-in' ? 0.65 : 1}}
+                        onClick={openProfile}
+                        style={{borderBottom:'1px solid #F7F9FC', cursor: 'pointer', opacity: r.status === 'not-signed-in' ? 0.75 : 1}}
                       >
                         <td style={{padding:'10px 16px'}}>
                           <div style={{display:'flex', alignItems:'center', gap:10}}>
                             <Avatar name={r.name} size={26}/>
                             <div>
-                              <div style={{fontSize:13, fontWeight:600, color:'#002A4B'}}>{r.name}</div>
+                              <div style={{fontSize:13, fontWeight:600, color:'#002A4B', textDecoration:'underline', textDecorationColor:'#CCEAFF', textUnderlineOffset:3}}>{r.name}</div>
                               <div style={{fontSize:11, color:'#5B6A7D'}}>{r.email} · <code style={{fontSize:10, background:'#F2F9FF', padding:'1px 5px', borderRadius:3, color:'#0072FF', fontWeight:700}}>{r.empId}</code></div>
                             </div>
                           </div>
@@ -615,7 +663,8 @@ export function AdminAnalytics() {
                           </Chip>
                         </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               )}
