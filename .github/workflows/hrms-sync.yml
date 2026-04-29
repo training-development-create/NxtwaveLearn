@@ -1,0 +1,55 @@
+name: HRMS Sync — Darwinbox to Supabase
+
+# Runs every hour at :00. This is the production cron that calls the
+# sync-employees-daily Supabase Edge Function.
+#
+# Required GitHub Secrets (Settings → Secrets → Actions):
+#   SUPABASE_PROJECT_URL  — e.g. https://itlqxrlxdrudwtnretcs.supabase.co
+#   DARWIN_SYNC_CRON_SECRET — the secret you set in Supabase Dashboard →
+#                             Settings → Edge Functions → Secrets
+#
+# Optional: set DARWIN_SYNC_CRON_SECRET to "" if you haven't enabled the
+# secret check in the edge function yet.
+
+on:
+  schedule:
+    # Every hour at :00 UTC  (IST = UTC+5:30, so this is :30 IST)
+    - cron: "0 * * * *"
+
+  # Allow manual trigger from the GitHub Actions tab for testing.
+  workflow_dispatch:
+
+jobs:
+  hrms-sync:
+    name: Sync Darwinbox → Supabase
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Call sync-employees-daily edge function
+        run: |
+          HTTP_STATUS=$(curl -s -o /tmp/sync_response.json -w "%{http_code}" \
+            -X POST \
+            -H "Content-Type: application/json" \
+            -H "x-cron-secret: ${{ secrets.DARWIN_SYNC_CRON_SECRET }}" \
+            "${{ secrets.SUPABASE_PROJECT_URL }}/functions/v1/sync-employees-daily" \
+            --data '{}')
+
+          echo "HTTP status: $HTTP_STATUS"
+          cat /tmp/sync_response.json | python3 -m json.tool || cat /tmp/sync_response.json
+
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "❌ Sync failed with HTTP $HTTP_STATUS"
+            exit 1
+          fi
+
+          # Extract key metrics from response for the Actions log.
+          IMPORTED=$(python3 -c "import json,sys; d=json.load(open('/tmp/sync_response.json')); print(d.get('imported',0))" 2>/dev/null || echo "?")
+          EXITED=$(python3 -c "import json,sys; d=json.load(open('/tmp/sync_response.json')); print(d.get('exited',0))" 2>/dev/null || echo "?")
+          NEW_HIRES=$(python3 -c "import json,sys; d=json.load(open('/tmp/sync_response.json')); print(d.get('new_hires_enrolled',0))" 2>/dev/null || echo "?")
+
+          echo ""
+          echo "✅ Sync complete"
+          echo "   Active employees synced : $IMPORTED"
+          echo "   Marked as exited        : $EXITED"
+          echo "   New hires enrolled      : $NEW_HIRES"

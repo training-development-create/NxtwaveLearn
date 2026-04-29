@@ -5,3 +5,6 @@ verify_jwt = false
 
 [functions.sync-employees-daily]
 verify_jwt = false
+# Cron scheduling is handled by .github/workflows/hrms-sync.yml (runs every hour).
+# To use Supabase native scheduling, upgrade to Supabase CLI >= 1.160 and add:
+#   schedule = "0 * * * *"

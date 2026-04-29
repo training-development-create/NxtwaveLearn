@@ -8,7 +8,7 @@ type Course = { id: string; title: string; tag: string; emoji: string; published
 type Lesson = { id: string; title: string; course_id: string; duration_seconds: number; video_path: string | null };
 type Dept = { id: string; name: string };
 type SubDept = { id: string; name: string; department_id: string };
-type EmpOpt = { id: string; name: string; email: string; department_id: string | null; sub_department_id: string | null; manager_id: string | null; is_manager: boolean };
+type EmpOpt = { id: string; name: string; email: string; department_id: string | null; sub_department_id: string | null; manager_id: string | null; designation_name: string | null; is_manager: boolean };
 type Assignment = {
   id: string;
   scope_all: boolean;
@@ -138,6 +138,7 @@ function EditAssignmentModal({ course, onClose, onSaved }: { course: Course; onC
   const [addDeptIds, setAddDeptIds] = useState<string[]>([]);
   const [addSubDeptIds, setAddSubDeptIds] = useState<string[]>([]);
   const [addManagerIds, setAddManagerIds] = useState<string[]>([]);
+  const [addDesignationNames, setAddDesignationNames] = useState<string[]>([]);
   const [addEmployeeIds, setAddEmployeeIds] = useState<string[]>([]);
 
   useEffect(() => {
@@ -151,7 +152,7 @@ function EditAssignmentModal({ course, onClose, onSaved }: { course: Course; onC
         for (let from = 0; ; from += page) {
           const { data, error } = await supabase
             .from('employees')
-            .select('id, name, email, department_id, sub_department_id, manager_id, status')
+            .select('id, name, email, department_id, sub_department_id, manager_id, designation_name, status')
             .eq('status', 'active').order('name').range(from, from + page - 1);
           if (error) { console.warn('[modules] paging stop:', error.message); break; }
           if (!data || data.length === 0) break;
@@ -172,7 +173,7 @@ function EditAssignmentModal({ course, onClose, onSaved }: { course: Course; onC
       setSubDepartments((s || []) as SubDept[]);
       const reportCounts = new Map<string, number>();
       allEmps.forEach(e => { if (e.manager_id) reportCounts.set(e.manager_id, (reportCounts.get(e.manager_id) ?? 0) + 1); });
-      setEmployeesAll(allEmps.map(e => ({ ...e, is_manager: (reportCounts.get(e.id) ?? 0) > 0 })));
+      setEmployeesAll(allEmps.map(e => ({ ...e, designation_name: (e as Record<string, unknown>).designation_name as string | null ?? null, is_manager: (reportCounts.get(e.id) ?? 0) > 0 })));
       setAssignments((ass || []) as Assignment[]);
       setResolvedAssignedSet(new Set(((assignedRpc || []) as { employee_id: string }[]).map(r => r.employee_id)));
       setLoading(false);
@@ -216,17 +217,29 @@ function EditAssignmentModal({ course, onClose, onSaved }: { course: Course; onC
     if (addDeptIds.length && (!e.department_id || !addDeptIds.includes(e.department_id))) return false;
     if (addSubDeptIds.length && (!e.sub_department_id || !addSubDeptIds.includes(e.sub_department_id))) return false;
     if (addManagerIds.length && (!e.manager_id || !addManagerIds.includes(e.manager_id))) return false;
+    if (addDesignationNames.length && (!e.designation_name || !addDesignationNames.includes(e.designation_name))) return false;
     return true;
   });
 
-  // ---- KEY REQUIREMENT: hide options that are already assigned ----
-  // Filter out anything already covered by an existing course_assignments row.
+  // Designation options: narrowed by current dept/subdept/manager picks.
+  const designationOptions = Array.from(
+    new Set(
+      employeesAll
+        .filter(e => {
+          if (addDeptIds.length && (!e.department_id || !addDeptIds.includes(e.department_id))) return false;
+          if (addSubDeptIds.length && (!e.sub_department_id || !addSubDeptIds.includes(e.sub_department_id))) return false;
+          if (addManagerIds.length && (!e.manager_id || !addManagerIds.includes(e.manager_id))) return false;
+          return true;
+        })
+        .map(e => e.designation_name)
+        .filter((d): d is string => !!d)
+    )
+  ).sort();
+
+  // ---- Only show options NOT already covered by an existing assignment ----
   const availableDepts = departments.filter(d => !assignedDeptIds.has(d.id));
   const availableSubDepts = filteredSubDepts.filter(s => !assignedSubDeptIds.has(s.id));
   const availableManagers = managerOptions.filter(m => !assignedManagerIds.has(m.id));
-  // Specific employees: hide those already individually-assigned AND those
-  // already covered by an existing dept / sub-dept / manager scope (no point
-  // re-adding them since they'd already be enrolled).
   const availableEmployees = employeeOptions.filter(e => {
     if (assignedEmployeeIds.has(e.id)) return false;
     if (resolvedAssignedSet.has(e.id)) return false;
@@ -236,7 +249,8 @@ function EditAssignmentModal({ course, onClose, onSaved }: { course: Course; onC
   const toggle = (arr: string[], setArr: (v: string[]) => void, id: string) => {
     setArr(arr.includes(id) ? arr.filter(x => x !== id) : [...arr, id]);
   };
-  const anyToAdd = addDeptIds.length || addSubDeptIds.length || addManagerIds.length || addEmployeeIds.length;
+  const anyToAdd = addDeptIds.length || addSubDeptIds.length || addManagerIds.length || addDesignationNames.length || addEmployeeIds.length;
+
 
   const save = async () => {
     if (!anyToAdd) return;
@@ -247,12 +261,26 @@ function EditAssignmentModal({ course, onClose, onSaved }: { course: Course; onC
       const rows: Record<string, unknown>[] = [];
       if (addEmployeeIds.length > 0) {
         addEmployeeIds.forEach(id => rows.push({ course_id: course.id, employee_id: id }));
-      } else if (addManagerIds.length > 0) {
+      } else if (addManagerIds.length > 0 && addDeptIds.length === 0 && addSubDeptIds.length === 0 && addDesignationNames.length === 0) {
+        // Manager-only: write manager scope so future reports auto-enroll.
         addManagerIds.forEach(id => rows.push({ course_id: course.id, manager_id: id }));
-      } else if (addSubDeptIds.length > 0) {
-        addSubDeptIds.forEach(id => rows.push({ course_id: course.id, sub_department_id: id }));
-      } else if (addDeptIds.length > 0) {
+      } else if (addDeptIds.length > 0 && addSubDeptIds.length === 0 && addManagerIds.length === 0 && addDesignationNames.length === 0) {
+        // Dept-only: write dept scope so future joiners auto-enroll.
         addDeptIds.forEach(id => rows.push({ course_id: course.id, department_id: id }));
+      } else if (addSubDeptIds.length > 0 && addDeptIds.length === 0 && addManagerIds.length === 0 && addDesignationNames.length === 0) {
+        // Sub-dept only: write sub-dept scope.
+        addSubDeptIds.forEach(id => rows.push({ course_id: course.id, sub_department_id: id }));
+      } else {
+        // Mixed / designation filter → snapshot intersection as employee_id rows.
+        const resolvedIds = new Set<string>();
+        employeesAll.forEach(e => {
+          if (addDeptIds.length && (!e.department_id || !addDeptIds.includes(e.department_id))) return;
+          if (addSubDeptIds.length && (!e.sub_department_id || !addSubDeptIds.includes(e.sub_department_id))) return;
+          if (addManagerIds.length && (!e.manager_id || !addManagerIds.includes(e.manager_id))) return;
+          if (addDesignationNames.length && (!e.designation_name || !addDesignationNames.includes(e.designation_name))) return;
+          resolvedIds.add(e.id);
+        });
+        resolvedIds.forEach(id => rows.push({ course_id: course.id, employee_id: id }));
       }
       if (rows.length) {
         const { error } = await supabase.from('course_assignments').insert(rows);
@@ -340,6 +368,7 @@ function EditAssignmentModal({ course, onClose, onSaved }: { course: Course; onC
                   <PickerGroup label={`Departments (${addDeptIds.length})`} options={availableDepts.map(d => ({ id: d.id, label: d.name }))} selected={addDeptIds} onToggle={(id)=>toggle(addDeptIds, setAddDeptIds, id)} searchable/>
                   <PickerGroup label={`Sub-departments (${addSubDeptIds.length})`} options={availableSubDepts.map(s => ({ id: s.id, label: s.name }))} selected={addSubDeptIds} onToggle={(id)=>toggle(addSubDeptIds, setAddSubDeptIds, id)} searchable/>
                   <PickerGroup label={`Managers (${addManagerIds.length})`} options={availableManagers.map(m => ({ id: m.id, label: m.name || m.email }))} selected={addManagerIds} onToggle={(id)=>toggle(addManagerIds, setAddManagerIds, id)} searchable/>
+                  <PickerGroup label={`Designation (${addDesignationNames.length})`} options={designationOptions.map(d => ({ id: d, label: d }))} selected={addDesignationNames} onToggle={(id)=>toggle(addDesignationNames, setAddDesignationNames, id)} searchable/>
                   <PickerGroup label={`Specific employees (${addEmployeeIds.length})`} options={availableEmployees.map(e => ({ id: e.id, label: e.name || e.email }))} selected={addEmployeeIds} onToggle={(id)=>toggle(addEmployeeIds, setAddEmployeeIds, id)} searchable/>
                 </div>
               </>

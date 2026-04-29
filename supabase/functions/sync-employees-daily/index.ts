@@ -12,7 +12,7 @@ type EmployeeUpsert = {
   name: string;
   employee_id: string | null;
   contact: string | null;
-  status: "active" | "inactive";
+  status: "active";
   last_synced_at: string;
   employee_status: string | null;
   first_name: string | null;
@@ -76,11 +76,6 @@ async function fetchDarwinRecords(apiKey: string, datasetKey: string): Promise<D
   const url = `${baseUrl.replace(/\/$/, "")}${path.startsWith("/") ? path : "/" + path}`;
   const basic = btoa(`${username}:${password}`);
 
-  const body = {
-    api_key: apiKey,
-    datasetKey: datasetKey,
-  };
-
   const res = await fetch(url, {
     method: "POST",
     headers: {
@@ -88,7 +83,7 @@ async function fetchDarwinRecords(apiKey: string, datasetKey: string): Promise<D
       "Content-Type": "application/json",
       Accept: "application/json",
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify({ api_key: apiKey, datasetKey }),
   });
 
   if (!res.ok) {
@@ -131,6 +126,13 @@ Deno.serve(async (req) => {
 
   const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
 
+  // -----------------------------------------------------------------------
+  // STEP 0: Record sync start time BEFORE fetching from Darwinbox.
+  // Any employee whose last_synced_at is older than syncStart at the END
+  // of this run was not returned by Darwinbox → they have left the org.
+  // -----------------------------------------------------------------------
+  const syncStart = new Date().toISOString();
+
   let records: DarwinRecord[];
   try {
     records = await fetchDarwinRecords(activeKey, activeDataset);
@@ -138,25 +140,42 @@ Deno.serve(async (req) => {
     return jsonResponse(500, { error: e instanceof Error ? e.message : "Darwinbox fetch failed" });
   }
 
-  if (!records.length) return jsonResponse(200, { ok: true, imported: 0, message: "No records returned" });
+  if (!records.length) {
+    // Even with no active records, still mark exited (rare edge case).
+    const { data: exitData } = await sb.rpc("mark_exited_employees", { _synced_before: syncStart });
+    const exited = (exitData as { exited_count: number }[] | null)?.[0]?.exited_count ?? 0;
+    return jsonResponse(200, { ok: true, imported: 0, exited, message: "No records returned from Darwinbox" });
+  }
 
+  // -----------------------------------------------------------------------
+  // STEP 1: Build upsert rows (active employees only).
+  // We set status="active" and last_synced_at=now for every row Darwinbox
+  // returns. Any row NOT touched here will have an old last_synced_at and
+  // will be marked exited in Step 3.
+  // -----------------------------------------------------------------------
   const now = new Date().toISOString();
   const upserts: EmployeeUpsert[] = [];
+
   for (const r of records) {
     const email = toEmail(r.company_email_id ?? r.official_email_id ?? r.email);
     if (!email) continue;
 
-    const fullName = toText(r.full_name) ?? ([toText(r.first_name), toText(r.last_name)].filter(Boolean).join(" ") || email);
-    const status = (toText(r.employee_status) ?? "active").toLowerCase();
-    if (status !== "active") continue;
+    const fullName =
+      toText(r.full_name) ??
+      ([toText(r.first_name), toText(r.last_name)].filter(Boolean).join(" ") || email);
+
+    // Only include employees Darwinbox marks as active.
+    // Employees absent from this response are caught by mark_exited_employees.
+    const employeeStatusRaw = (toText(r.employee_status) ?? "active").toLowerCase();
+    if (employeeStatusRaw !== "active") continue;
 
     upserts.push({
       email,
       name: fullName,
       employee_id: toText(r.employee_id),
       contact: toText(r.personal_mobile_no ?? r.office_mobile_no),
-      status: status === "active" ? "active" : "inactive",
-      last_synced_at: now,
+      status: "active",
+      last_synced_at: now,           // fresh stamp — proves they were seen this run
       employee_status: toText(r.employee_status),
       first_name: toText(r.first_name),
       last_name: toText(r.last_name),
@@ -184,8 +203,16 @@ Deno.serve(async (req) => {
     });
   }
 
-  if (!upserts.length) return jsonResponse(200, { ok: true, imported: 0, message: "No mappable email rows" });
+  if (!upserts.length) {
+    const { data: exitData } = await sb.rpc("mark_exited_employees", { _synced_before: syncStart });
+    const exited = (exitData as { exited_count: number }[] | null)?.[0]?.exited_count ?? 0;
+    return jsonResponse(200, { ok: true, imported: 0, exited, message: "No mappable active-email rows" });
+  }
 
+  // -----------------------------------------------------------------------
+  // STEP 2: Upsert employees (UPSERT = insert new + update existing).
+  // Uses email as the conflict key so darwin_id changes don't create dupes.
+  // -----------------------------------------------------------------------
   let usedMinimalFallback = false;
   for (const batch of chunks(upserts, 500)) {
     const { error: upsertErr } = await sb
@@ -193,8 +220,7 @@ Deno.serve(async (req) => {
       .upsert(batch, { onConflict: "email" });
     if (!upsertErr) continue;
 
-    // Backward compatibility for projects where extended Darwin columns
-    // have not been migrated yet.
+    // Backward compat: project may not have the extended Darwin columns yet.
     if (!upsertErr.message.includes("Could not find the")) {
       return jsonResponse(500, { error: `employees upsert failed: ${upsertErr.message}` });
     }
@@ -213,12 +239,32 @@ Deno.serve(async (req) => {
     if (fallbackErr) return jsonResponse(500, { error: `employees fallback upsert failed: ${fallbackErr.message}` });
   }
 
-  // Build hierarchy tables from Darwin fields:
-  // - top_department -> departments.name
-  // - department_name -> sub_departments.name (under top_department)
-  // This powers assignment filters by department/sub-department.
-  const departmentNames = Array.from(new Set(upserts.map((u) => u.top_department).filter((v): v is string => !!v)));
-  const { data: deptRowsBefore, error: deptReadBeforeErr } = await sb.from("departments").select("id, name");
+  // -----------------------------------------------------------------------
+  // STEP 3: Mark exited employees.
+  // The DB function finds employees whose last_synced_at < syncStart
+  // (i.e., Darwinbox did not return them this run) and sets status='exited'.
+  // A DB trigger then revokes their active enrollments automatically.
+  // Learning progress (lesson_progress, quiz_attempts) is NEVER deleted.
+  // -----------------------------------------------------------------------
+  const { data: exitData, error: exitErr } = await sb
+    .rpc("mark_exited_employees", { _synced_before: syncStart });
+  const exitedCount = (exitData as { exited_count: number }[] | null)?.[0]?.exited_count ?? 0;
+  const exitedEmails = (exitData as { exited_emails: string[] }[] | null)?.[0]?.exited_emails ?? [];
+  if (exitErr) {
+    // Non-fatal — log and continue.
+    console.warn("[sync] mark_exited_employees failed:", exitErr.message);
+  }
+
+  // -----------------------------------------------------------------------
+  // STEP 4: Sync org hierarchy (departments → sub-departments).
+  // Ensures new departments/sub-depts from Darwinbox exist in DB.
+  // Never deletes old ones (course assignments still reference them).
+  // -----------------------------------------------------------------------
+  const departmentNames = Array.from(
+    new Set(upserts.map((u) => u.top_department).filter((v): v is string => !!v))
+  );
+  const { data: deptRowsBefore, error: deptReadBeforeErr } = await sb
+    .from("departments").select("id, name");
   if (deptReadBeforeErr) return jsonResponse(500, { error: `departments read failed: ${deptReadBeforeErr.message}` });
   const existingDeptNames = new Set((deptRowsBefore ?? []).map((d) => String(d.name)));
   const missingDepts = departmentNames.filter((n) => !existingDeptNames.has(n));
@@ -231,6 +277,7 @@ Deno.serve(async (req) => {
   if (deptReadErr) return jsonResponse(500, { error: `departments read failed: ${deptReadErr.message}` });
   const deptIdByName = new Map((deptRows ?? []).map((d) => [String(d.name), String(d.id)]));
 
+  // Sub-departments (keyed by deptId::name to avoid cross-dept name clashes).
   const subUpserts = Array.from(new Map(
     upserts
       .map((u) => {
@@ -239,26 +286,46 @@ Deno.serve(async (req) => {
         if (!topDept || !subDept) return null;
         const departmentId = deptIdByName.get(topDept);
         if (!departmentId) return null;
-        return [`${departmentId}::${subDept.toLowerCase()}`, { name: subDept, department_id: departmentId }];
+        return [
+          `${departmentId}::${subDept.toLowerCase()}`,
+          { name: subDept, department_id: departmentId },
+        ];
       })
       .filter((x): x is [string, { name: string; department_id: string }] => x !== null),
   ).values());
-  const { data: subBefore, error: subBeforeErr } = await sb.from("sub_departments").select("name, department_id");
+  const { data: subBefore, error: subBeforeErr } = await sb
+    .from("sub_departments").select("name, department_id");
   if (subBeforeErr) return jsonResponse(500, { error: `sub_departments read failed: ${subBeforeErr.message}` });
-  const existingSubKeys = new Set((subBefore ?? []).map((s) => `${String(s.department_id)}::${String(s.name).toLowerCase()}`));
-  const missingSubs = subUpserts.filter((s) => !existingSubKeys.has(`${s.department_id}::${s.name.toLowerCase()}`));
+  const existingSubKeys = new Set(
+    (subBefore ?? []).map((s) => `${String(s.department_id)}::${String(s.name).toLowerCase()}`)
+  );
+  const missingSubs = subUpserts.filter(
+    (s) => !existingSubKeys.has(`${s.department_id}::${s.name.toLowerCase()}`)
+  );
   for (const batch of chunks(missingSubs, 500)) {
     const { error } = await sb.from("sub_departments").insert(batch);
     if (error) return jsonResponse(500, { error: `sub_departments insert failed: ${error.message}` });
   }
-  const { data: subRows, error: subReadErr } = await sb.from("sub_departments").select("id, name, department_id");
+  const { data: subRows, error: subReadErr } = await sb
+    .from("sub_departments").select("id, name, department_id");
   if (subReadErr) return jsonResponse(500, { error: `sub_departments read failed: ${subReadErr.message}` });
-  const subIdByKey = new Map((subRows ?? []).map((s) => [`${String(s.department_id)}::${String(s.name).toLowerCase()}`, String(s.id)]));
+  const subIdByKey = new Map(
+    (subRows ?? []).map((s) => [
+      `${String(s.department_id)}::${String(s.name).toLowerCase()}`,
+      String(s.id),
+    ])
+  );
 
-  // Attach hierarchy ids to employee rows (for assignment + analytics filters).
+  // -----------------------------------------------------------------------
+  // STEP 5: Attach hierarchy FK IDs to each employee row.
+  // This keeps department_id, sub_department_id, and designation current
+  // even if an employee changes department or role between syncs.
+  // -----------------------------------------------------------------------
   const employeeHierarchyPatches = upserts.map((u) => {
     const deptId = u.top_department ? deptIdByName.get(u.top_department) ?? null : null;
-    const subKey = deptId && u.department_name ? `${deptId}::${u.department_name.toLowerCase()}` : null;
+    const subKey = deptId && u.department_name
+      ? `${deptId}::${u.department_name.toLowerCase()}`
+      : null;
     const subDeptId = subKey ? subIdByKey.get(subKey) ?? null : null;
     return {
       email: u.email,
@@ -266,6 +333,8 @@ Deno.serve(async (req) => {
       sub_department_id: subDeptId,
       department_name: u.top_department ?? u.department_name ?? null,
       sub_department_name: u.department_name ?? null,
+      designation: u.designation ?? null,
+      designation_name: u.designation_name ?? null,
       manager_name: u.direct_manager ?? null,
       manager_email: u.direct_manager_email ?? null,
     };
@@ -275,17 +344,24 @@ Deno.serve(async (req) => {
     if (error) return jsonResponse(500, { error: `employee hierarchy update failed: ${error.message}` });
   }
 
-  // Resolve manager_id by manager email now that all active employees are present.
+  // -----------------------------------------------------------------------
+  // STEP 6: Link manager_id FKs (by matching manager email → employees.id).
+  // Runs after all employees are upserted so cross-references always resolve.
+  // Also updates hierarchy if reporting manager changed since last sync.
+  // -----------------------------------------------------------------------
   const { data: allEmployees, error: allEmployeesErr } = await sb
     .from("employees")
     .select("id, email")
     .eq("status", "active");
   if (allEmployeesErr) return jsonResponse(500, { error: `employees read for manager linking failed: ${allEmployeesErr.message}` });
-  const employeeIdByEmail = new Map((allEmployees ?? []).map((e) => [String(e.email).toLowerCase(), String(e.id)]));
+
+  const employeeIdByEmail = new Map(
+    (allEmployees ?? []).map((e) => [String(e.email).toLowerCase(), String(e.id)])
+  );
   const managerEmailByEmployeeEmail = new Map(
     upserts
       .filter((u) => !!u.direct_manager_email)
-      .map((u) => [u.email.toLowerCase(), (u.direct_manager_email as string).toLowerCase()]),
+      .map((u) => [u.email.toLowerCase(), (u.direct_manager_email as string).toLowerCase()])
   );
   const managerPatches = (allEmployees ?? [])
     .map((e) => {
@@ -302,15 +378,20 @@ Deno.serve(async (req) => {
     if (error) return jsonResponse(500, { error: `manager linking failed: ${error.message}` });
   }
 
-  // Profiles can only exist for users that already have auth accounts.
+  // -----------------------------------------------------------------------
+  // STEP 7: Sync auth-linked employee profiles.
+  // -----------------------------------------------------------------------
   const profileRows: Record<string, unknown>[] = [];
-  const upsertByEmail = new Map<string, Record<string, unknown>>();
-  for (const row of upserts) upsertByEmail.set(row.email as string, row);
+  const upsertByEmail = new Map<string, EmployeeUpsert>();
+  for (const row of upserts) upsertByEmail.set(row.email, row);
+
   const { data: matched, error: matchedErr } = await sb
     .from("employees")
     .select("auth_user_id, email, name, employee_id, contact, department_name, sub_department_name, manager_name, manager_email")
-    .not("auth_user_id", "is", null);
+    .not("auth_user_id", "is", null)
+    .eq("status", "active");
   if (matchedErr) return jsonResponse(500, { error: `matched employees read failed: ${matchedErr.message}` });
+
   for (const emp of matched ?? []) {
     if (!emp.auth_user_id) continue;
     const source = upsertByEmail.get((emp.email ?? "").toLowerCase());
@@ -320,10 +401,10 @@ Deno.serve(async (req) => {
       email: emp.email,
       full_name: emp.name ?? "",
       employee_id: emp.employee_id ?? null,
-      department: emp.department_name ?? source?.department_name ?? source?.top_department ?? null,
-      sub_department: emp.sub_department_name ?? source?.department_name ?? null,
-      manager_name: emp.manager_name ?? source?.direct_manager ?? null,
-      manager_email: emp.manager_email ?? source?.direct_manager_email ?? null,
+      department: emp.department_name ?? source.top_department ?? null,
+      sub_department: emp.sub_department_name ?? source.department_name ?? null,
+      manager_name: emp.manager_name ?? source.direct_manager ?? null,
+      manager_email: emp.manager_email ?? source.direct_manager_email ?? null,
       manager_contact: emp.contact ?? null,
       darwin_synced_at: now,
     });
@@ -354,7 +435,9 @@ Deno.serve(async (req) => {
     }
   }
 
-  // Ensure all auth-linked employees have learner role.
+  // -----------------------------------------------------------------------
+  // STEP 8: Ensure auth-linked employees have the learner role.
+  // -----------------------------------------------------------------------
   const roleRows = (matched ?? [])
     .filter((e) => !!e.auth_user_id)
     .map((e) => ({ user_id: e.auth_user_id, role: "learner" }));
@@ -365,12 +448,32 @@ Deno.serve(async (req) => {
     }
   }
 
+  // -----------------------------------------------------------------------
+  // STEP 9: Re-enroll new hires (employees first seen in this sync run).
+  // The DB trigger handles most cases, but explicit refresh guarantees
+  // scope-based rules (dept/manager assignments) are applied immediately.
+  // -----------------------------------------------------------------------
+  const { data: newHires } = await sb
+    .from("employees")
+    .select("id")
+    .eq("status", "active")
+    .not("auth_user_id", "is", null)
+    .gte("last_synced_at", syncStart);
+
+  for (const e of newHires ?? []) {
+    await sb.rpc("refresh_enrollments_for_employee", { _employee_id: e.id });
+  }
+
   return jsonResponse(200, {
     ok: true,
+    sync_started_at: syncStart,
     imported: upserts.length,
+    exited: exitedCount,
+    exited_sample: exitedEmails.slice(0, 10),
     profiles_updated: profileRows.length,
     roles_synced: roleRows.length,
     manager_links: managerPatches.length,
+    new_hires_enrolled: (newHires ?? []).length,
     extended_columns_written: !usedMinimalFallback,
   });
 });

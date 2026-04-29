@@ -48,12 +48,13 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
   // ----- Assignment picker state -----
   type Dept = { id: string; name: string };
   type SubDept = { id: string; name: string; department_id: string };
-  type EmpOpt = { id: string; name: string; email: string; department_id: string | null; sub_department_id: string | null; manager_id: string | null; is_manager: boolean };
+  type EmpOpt = { id: string; name: string; email: string; department_id: string | null; sub_department_id: string | null; manager_id: string | null; designation_name: string | null; is_manager: boolean };
   const [assignAll, setAssignAll] = useState(true);
   const [assignDeptIds, setAssignDeptIds] = useState<string[]>([]);
   const [assignSubDeptIds, setAssignSubDeptIds] = useState<string[]>([]);
   const [assignManagerIds, setAssignManagerIds] = useState<string[]>([]);
   const [assignEmployeeIds, setAssignEmployeeIds] = useState<string[]>([]);
+  const [assignDesignationNames, setAssignDesignationNames] = useState<string[]>([]);
   const [departments, setDepartments] = useState<Dept[]>([]);
   const [subDepartments, setSubDepartments] = useState<SubDept[]>([]);
   const [employeesAll, setEmployeesAll] = useState<EmpOpt[]>([]);
@@ -71,7 +72,7 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
         for (let from = 0; ; from += page) {
           const { data, error } = await supabase
             .from('employees')
-            .select('id, name, email, department_id, sub_department_id, manager_id, status')
+            .select('id, name, email, department_id, sub_department_id, manager_id, designation_name, status')
             .eq('status', 'active')
             .order('name', { ascending: true })
             .range(from, from + page - 1);
@@ -99,6 +100,7 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
       });
       setEmployeesAll(allEmployees.map(emp => ({
         ...emp,
+        designation_name: (emp as Record<string, unknown>).designation_name as string | null ?? null,
         is_manager: (reportCounts.get(emp.id) ?? 0) > 0,
       })));
     })();
@@ -136,13 +138,27 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
     });
   })();
 
+  // Designation options: filtered by current dept/subdept/manager selection.
+  const designationOptions = Array.from(
+    new Set(
+      employeesAll
+        .filter(e => {
+          if (assignDeptIds.length && (!e.department_id || !assignDeptIds.includes(e.department_id))) return false;
+          if (assignSubDeptIds.length && (!e.sub_department_id || !assignSubDeptIds.includes(e.sub_department_id))) return false;
+          if (assignManagerIds.length && (!e.manager_id || !assignManagerIds.includes(e.manager_id))) return false;
+          return true;
+        })
+        .map(e => e.designation_name)
+        .filter((d): d is string => !!d)
+    )
+  ).sort();
+
   // Specific-employees list: each row must satisfy ALL active filters.
-  // - dept / sub-dept narrow by the EMPLOYEE's own placement (correct here)
-  // - manager filter narrows to that manager's reports (regardless of dept)
   const employeeOptions = employeesAll.filter(e => {
     if (assignDeptIds.length && (!e.department_id || !assignDeptIds.includes(e.department_id))) return false;
     if (assignSubDeptIds.length && (!e.sub_department_id || !assignSubDeptIds.includes(e.sub_department_id))) return false;
     if (assignManagerIds.length && (!e.manager_id || !assignManagerIds.includes(e.manager_id))) return false;
+    if (assignDesignationNames.length && (!e.designation_name || !assignDesignationNames.includes(e.designation_name))) return false;
     return true;
   });
   useEffect(() => {
@@ -165,7 +181,13 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
       const next = prev.filter(id => allowedEmployeeIds.has(id));
       return next.length === prev.length && next.every((v, i) => v === prev[i]) ? prev : next;
     });
-  }, [assignDeptIds, assignSubDeptIds, assignManagerIds, employeeOptions]);
+  }, [assignDeptIds, assignSubDeptIds, assignManagerIds, assignDesignationNames, employeeOptions]);
+  // Clear designation selections when dept/subdept/manager filter changes.
+  useEffect(() => {
+    const allowed = new Set(designationOptions);
+    setAssignDesignationNames(prev => prev.filter(d => allowed.has(d)));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [assignDeptIds, assignSubDeptIds, assignManagerIds]);
   const toggle = (arr: string[], setArr: (v: string[]) => void, id: string) => {
     setArr(arr.includes(id) ? arr.filter(x => x !== id) : [...arr, id]);
   };
@@ -173,6 +195,7 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
     || assignDeptIds.length > 0
     || assignSubDeptIds.length > 0
     || assignManagerIds.length > 0
+    || assignDesignationNames.length > 0
     || assignEmployeeIds.length > 0;
 
   // Resolve the assignment into the actual employee set using INTERSECTION
@@ -195,13 +218,14 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
       assignEmployeeIds.forEach(id => out.add(id));
       return out;
     }
-    // No specific employees — use the tree filter intersection.
-    const usingTreeFilter = assignDeptIds.length > 0 || assignSubDeptIds.length > 0 || assignManagerIds.length > 0;
+    // No specific employees — use the tree filter intersection (incl. designation).
+    const usingTreeFilter = assignDeptIds.length > 0 || assignSubDeptIds.length > 0 || assignManagerIds.length > 0 || assignDesignationNames.length > 0;
     if (usingTreeFilter) {
       employeesAll.forEach(e => {
         if (assignDeptIds.length > 0    && (!e.department_id     || !assignDeptIds.includes(e.department_id)))     return;
         if (assignSubDeptIds.length > 0 && (!e.sub_department_id || !assignSubDeptIds.includes(e.sub_department_id))) return;
         if (assignManagerIds.length > 0 && (!e.manager_id        || !assignManagerIds.includes(e.manager_id)))     return;
+        if (assignDesignationNames.length > 0 && (!e.designation_name || !assignDesignationNames.includes(e.designation_name))) return;
         out.add(e.id);
       });
     }
@@ -352,21 +376,25 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
           const usingDept = assignDeptIds.length > 0;
           const usingSub = assignSubDeptIds.length > 0;
           const usingMgr = assignManagerIds.length > 0;
+          const usingDesig = assignDesignationNames.length > 0;
           const usingEmp = assignEmployeeIds.length > 0;
-          const treeLevels = (usingDept ? 1 : 0) + (usingSub ? 1 : 0) + (usingMgr ? 1 : 0);
 
           if (usingEmp) {
-            // Specific employees selected → only assign to those people.
-            // Dept/subdept/manager are just cascading UI filters.
+            // Specific employees → only assign those (all other filters are UI cascade only).
             assignEmployeeIds.forEach(id => rows.push({ course_id: courseId, employee_id: id }));
-          } else if (treeLevels === 1) {
-            // Single tree level, no specific employees → write a scope row
-            // so new joiners auto-enroll.
-            if (usingMgr) assignManagerIds.forEach(id => rows.push({ course_id: courseId, manager_id: id }));
-            else if (usingSub) assignSubDeptIds.forEach(id => rows.push({ course_id: courseId, sub_department_id: id }));
-            else if (usingDept) assignDeptIds.forEach(id => rows.push({ course_id: courseId, department_id: id }));
+          } else if (!usingDept && !usingSub && !usingMgr && !usingDesig) {
+            // Should not happen (assignmentValid guard above), but be safe.
+          } else if (!usingDept && !usingSub && !usingDesig && usingMgr) {
+            // Single tree level: manager only → write manager scope rows (auto-enroll future reports).
+            assignManagerIds.forEach(id => rows.push({ course_id: courseId, manager_id: id }));
+          } else if (!usingSub && !usingMgr && !usingDesig && usingDept) {
+            // Single tree level: dept only → write dept scope rows (auto-enroll future joiners).
+            assignDeptIds.forEach(id => rows.push({ course_id: courseId, department_id: id }));
+          } else if (!usingDept && !usingMgr && !usingDesig && usingSub) {
+            // Single tree level: sub-dept only.
+            assignSubDeptIds.forEach(id => rows.push({ course_id: courseId, sub_department_id: id }));
           } else {
-            // Mixed tree scope, no specific employees → snapshot the intersection.
+            // Mixed filters (incl. designation) → snapshot the intersection as employee_id rows.
             resolvedEmployeeIds.forEach(id => rows.push({ course_id: courseId, employee_id: id }));
           }
         }
@@ -584,6 +612,7 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
                       <PickerGroup label={`Departments (${assignDeptIds.length})`} options={departments.map(d => ({ id: d.id, label: d.name }))} selected={assignDeptIds} onToggle={(id)=>toggle(assignDeptIds, setAssignDeptIds, id)} onSetAll={setAssignDeptIds} searchable/>
                       <PickerGroup label={`Sub-departments (${assignSubDeptIds.length})`} options={filteredSubDepts.map(s => ({ id: s.id, label: s.name }))} selected={assignSubDeptIds} onToggle={(id)=>toggle(assignSubDeptIds, setAssignSubDeptIds, id)} onSetAll={setAssignSubDeptIds} searchable/>
                       <PickerGroup label={`Managers (${assignManagerIds.length})`} options={managerOptions.map(m => ({ id: m.id, label: m.name || m.email }))} selected={assignManagerIds} onToggle={(id)=>toggle(assignManagerIds, setAssignManagerIds, id)} onSetAll={setAssignManagerIds} searchable/>
+                      <PickerGroup label={`Designation (${assignDesignationNames.length})`} options={designationOptions.map(d => ({ id: d, label: d }))} selected={assignDesignationNames} onToggle={(id)=>toggle(assignDesignationNames, setAssignDesignationNames, id)} onSetAll={setAssignDesignationNames} searchable/>
                       <PickerGroup label={`Specific employees (${assignEmployeeIds.length})`} options={employeeOptions.map(emp => ({ id: emp.id, label: emp.name || emp.email }))} selected={assignEmployeeIds} onToggle={(id)=>toggle(assignEmployeeIds, setAssignEmployeeIds, id)} onSetAll={setAssignEmployeeIds} searchable/>
                     </div>
                   )}

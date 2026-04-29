@@ -19,7 +19,9 @@ type LessonWatch = { id: string; title: string; avgPct: number; doneCount: numbe
 type ManagerRow = { managerEmail: string; managerName: string; total: number; completed: number; pending: number };
 type ProfileMini = {
   id: string; full_name: string; email: string; employee_id: string | null;
-  department: string | null; sub_department: string | null; manager_name: string | null; manager_email: string | null; manager_contact: string | null;
+  department: string | null; sub_department: string | null;
+  manager_name: string | null; manager_email: string | null; manager_contact: string | null;
+  designation_name: string | null;
 };
 // Internal helper to convert an employees row (with joined dept + manager)
 // into the ProfileMini shape the rest of this file expects.
@@ -29,6 +31,7 @@ type EmployeeJoinRow = {
   email: string;
   name: string;
   employee_id: string | null;
+  designation_name: string | null;
   departments: { name: string } | null;
   sub_departments: { name: string } | null;
   manager: { name: string; email: string; contact: string | null } | null;
@@ -45,6 +48,7 @@ const employeeToProfile = (e: EmployeeJoinRow): ProfileMini | null => {
     manager_name: e.manager?.name ?? null,
     manager_email: e.manager?.email ?? null,
     manager_contact: e.manager?.contact ?? null,
+    designation_name: e.designation_name ?? null,
   };
 };
 
@@ -54,6 +58,21 @@ export function AdminAnalytics() {
   const [course, setCourse] = useState<string>('');
   const [vid, setVid] = useState<string>('');
   const [kpi, setKpi] = useState({ enrolled: 0, watchPct: 0, completion: 0, passRate: 0, totalWatchSec: 0 });
+  // HRMS sync controls
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState<{ ok: boolean; imported?: number; exited?: number; ts: string } | null>(null);
+  const triggerSync = async () => {
+    setSyncing(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('sync-employees-daily', { body: {} });
+      if (error) setSyncResult({ ok: false, ts: new Date().toLocaleTimeString() });
+      else setSyncResult({ ok: true, imported: data?.imported ?? 0, exited: data?.exited ?? 0, ts: new Date().toLocaleTimeString() });
+      // Reload stats so counts reflect any newly exited employees.
+      await loadStats();
+    } catch {
+      setSyncResult({ ok: false, ts: new Date().toLocaleTimeString() });
+    } finally { setSyncing(false); }
+  };
   const [lessonWatch, setLessonWatch] = useState<LessonWatch[]>([]);
   const [learners, setLearners] = useState<LearnerRow[]>([]);
   const [retention, setRetention] = useState<{ id: string; title: string; pct: number }[]>([]);
@@ -64,6 +83,7 @@ export function AdminAnalytics() {
   const [department, setDepartment] = useState<string>('all');
   const [subDepartment, setSubDepartment] = useState<string>('all');
   const [managerEmail, setManagerEmail] = useState<string>('all');
+  const [designation, setDesignation] = useState<string>('all');
   const [departmentStats, setDepartmentStats] = useState<{ department: string; total: number; completed: number; pct: number }[]>([]);
   const [managerStats, setManagerStats] = useState<ManagerRow[]>([]);
 
@@ -104,7 +124,7 @@ export function AdminAnalytics() {
       for (let from = 0; ; from += pageSize) {
         const { data, error } = await supabase
           .from('employees')
-          .select('id, auth_user_id, email, name, employee_id, departments:department_id(name), sub_departments:sub_department_id(name), manager:manager_id(name, email, contact)')
+          .select('id, auth_user_id, email, name, employee_id, designation_name, departments:department_id(name), sub_departments:sub_department_id(name), manager:manager_id(name, email, contact)')
           .eq('status', 'active')
           .order('name', { ascending: true })
           .range(from, from + pageSize - 1);
@@ -131,8 +151,6 @@ export function AdminAnalytics() {
       .map(e => {
         const base = employeeToProfile(e);
         return {
-          // Use auth_user_id for the public `id` when present, else employee_row_id
-          // so the row can still appear in dept/manager rollups.
           id: e.auth_user_id ?? e.id,
           employee_row_id: e.id,
           signed_in: !!e.auth_user_id,
@@ -144,6 +162,7 @@ export function AdminAnalytics() {
           manager_name: e.manager?.name ?? null,
           manager_email: e.manager?.email ?? null,
           manager_contact: e.manager?.contact ?? null,
+          designation_name: e.designation_name ?? null,
         };
       });
 
@@ -285,12 +304,11 @@ export function AdminAnalytics() {
       const key = l.managerEmail || l.managerName || 'Unassigned';
       if (key !== managerEmail) return false;
     }
+    if (designation !== 'all' && (l.designation || 'Unassigned') !== designation) return false;
     if (search && !`${l.name} ${l.empId} ${l.email}`.toLowerCase().includes(search.toLowerCase())) return false;
     return true;
   });
 
-  // Build distinct lists for the dropdowns (course-scoped via profilesAll set
-  // captured during loadStats).
   const departmentOptions = Array.from(new Set(profilesAll.map(p => p.department || 'Unassigned'))).sort();
   const subDepartmentOptions = Array.from(
     new Set(
@@ -309,11 +327,26 @@ export function AdminAnalytics() {
   }),
   ).values()).sort((a, b) => a.label.localeCompare(b.label));
 
+  // Designation options: filtered by the active dept / subdept / manager selection.
+  const designationOptions = Array.from(
+    new Set(
+      profilesAll
+        .filter(p => department === 'all' || (p.department || 'Unassigned') === department)
+        .filter(p => subDepartment === 'all' || (p.sub_department || 'Unassigned') === subDepartment)
+        .map(p => (p as ProfileMini).designation_name || 'Unassigned')
+    )
+  ).sort();
+
   useEffect(() => {
     if (managerEmail === 'all') return;
     const allowed = new Set(managerOptions.map(m => m.key));
     if (!allowed.has(managerEmail)) setManagerEmail('all');
   }, [department, subDepartment, managerOptions, managerEmail]);
+  useEffect(() => {
+    if (designation === 'all') return;
+    if (!designationOptions.includes(designation)) setDesignation('all');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [department, subDepartment, managerEmail]);
 
   if (courses.length === 0) {
     return <div style={{padding:36}}><EmptyState icon="📊" title="No courses to analyze" sub="Once you publish a course in Upload & Quiz, analytics will start tracking it."/></div>;
@@ -324,6 +357,23 @@ export function AdminAnalytics() {
 
   return (
     <div style={{padding:'28px 36px 48px', animation:'fadeUp .3s'}}>
+      {/* HRMS Sync banner */}
+      <div style={{display:'flex', alignItems:'center', gap:12, marginBottom:16, padding:'10px 16px', background:'#F7F9FC', border:'1px solid #EEF2F7', borderRadius:10}}>
+        <span style={{fontSize:13, fontWeight:700, color:'#0A1F3D'}}>🔄 HRMS Sync</span>
+        <span style={{fontSize:12, color:'#5B6A7D', flex:1}}>Keep employee data current with Darwinbox. Exited employees are removed automatically every hour.</span>
+        {syncResult && (
+          <span style={{fontSize:11, color: syncResult.ok ? '#17A674' : '#C2261D', fontWeight:600}}>
+            {syncResult.ok ? `✓ ${syncResult.imported} imported · ${syncResult.exited} exited · ${syncResult.ts}` : `✗ Sync failed · ${syncResult.ts}`}
+          </span>
+        )}
+        <button
+          onClick={triggerSync}
+          disabled={syncing}
+          style={{padding:'7px 16px', background: syncing ? '#EEF2F7' : '#0072FF', color: syncing ? '#8A97A8' : '#fff', border:'none', borderRadius:8, fontSize:12, fontWeight:700, cursor: syncing ? 'not-allowed' : 'pointer', transition:'background .15s'}}
+        >
+          {syncing ? 'Syncing…' : 'Sync Now'}
+        </button>
+      </div>
       <div style={{display:'flex', gap:10, marginBottom:20, alignItems:'center', flexWrap:'wrap'}}>
         <select value={course} onChange={e=>setCourse(e.target.value)} style={{padding:'10px 14px', border:'1px solid #DDE4ED', borderRadius:10, fontSize:13, background:'#fff', minWidth:280, fontWeight:600}}>
           {courses.map(c => <option key={c.id} value={c.id}>{c.title}</option>)}
@@ -344,6 +394,10 @@ export function AdminAnalytics() {
         <select value={managerEmail} onChange={e=>setManagerEmail(e.target.value)} title="Filter by manager" style={{padding:'10px 14px', border:'1px solid #DDE4ED', borderRadius:10, fontSize:13, background:'#fff', minWidth:220, fontWeight:600}}>
           <option value="all">All managers</option>
           {managerOptions.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
+        </select>
+        <select value={designation} onChange={e=>setDesignation(e.target.value)} title="Filter by designation" style={{padding:'10px 14px', border:'1px solid #DDE4ED', borderRadius:10, fontSize:13, background:'#fff', minWidth:200, fontWeight:600}}>
+          <option value="all">All designations</option>
+          {designationOptions.map(d => <option key={d} value={d}>{d}</option>)}
         </select>
       </div>
 
@@ -716,7 +770,8 @@ function PerLessonWatch({ lessonId, runtime, courseId, search, allowedUserIds, o
       supabase.from('lesson_progress').select('user_id, watched_seconds, completed').eq('lesson_id', lessonId),
       supabase.from('employees')
         .select('id, auth_user_id, email, name, employee_id, departments:department_id(name), sub_departments:sub_department_id(name), manager:manager_id(name, email, contact)')
-        .not('auth_user_id', 'is', null),
+        .not('auth_user_id', 'is', null)
+        .eq('status', 'active'),  // exited employees must not appear in per-video table
       supabase.from('quiz_attempts').select('user_id, score, total').eq('lesson_id', lessonId),
     ]);
     const enrolledIds = new Set((enrolls || []).map((e: { user_id: string }) => e.user_id));
