@@ -201,7 +201,8 @@ function EditAssignmentModal({ course, onClose, onSaved }: { course: Course; onC
   const managerOptions = useMemo(() => {
     const dSet = new Set(addDeptIds);
     const sdSet = new Set(addSubDeptIds);
-    const noFilter = dSet.size === 0 && sdSet.size === 0;
+    const desSet = new Set(addDesignationNames);
+    const noFilter = dSet.size === 0 && sdSet.size === 0 && desSet.size === 0;
     return employeesAll.filter(m => {
       if (!m.is_manager) return false;
       if (noFilter) return true;
@@ -209,10 +210,11 @@ function EditAssignmentModal({ course, onClose, onSaved }: { course: Course; onC
       return reps.some(r => {
         if (dSet.size && (!r.department_id || !dSet.has(r.department_id))) return false;
         if (sdSet.size && (!r.sub_department_id || !sdSet.has(r.sub_department_id))) return false;
+        if (desSet.size && (!r.designation_name || !desSet.has(r.designation_name))) return false;
         return true;
       });
     });
-  }, [employeesAll, addDeptIds, addSubDeptIds, reportsByMgr]);
+  }, [employeesAll, addDeptIds, addSubDeptIds, addDesignationNames, reportsByMgr]);
   const employeeOptions = employeesAll.filter(e => {
     if (addDeptIds.length && (!e.department_id || !addDeptIds.includes(e.department_id))) return false;
     if (addSubDeptIds.length && (!e.sub_department_id || !addSubDeptIds.includes(e.sub_department_id))) return false;

@@ -115,7 +115,8 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
   const managerOptions = (() => {
     const deptSet = new Set(assignDeptIds);
     const subDeptSet = new Set(assignSubDeptIds);
-    const noTreeFilter = deptSet.size === 0 && subDeptSet.size === 0;
+    const desigSet = new Set(assignDesignationNames);
+    const noTreeFilter = deptSet.size === 0 && subDeptSet.size === 0 && desigSet.size === 0;
     // Build manager_id -> [reports] index from the employees set.
     const reportsByManager = new Map<string, EmpOpt[]>();
     employeesAll.forEach(e => {
@@ -128,11 +129,11 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
       if (!m.is_manager) return false;
       if (noTreeFilter) return true;
       const reports = reportsByManager.get(m.id) ?? [];
-      // Show this manager if AT LEAST one of their reports matches BOTH
-      // selected dept AND selected sub-dept (intersection on each report).
+      // Show this manager if AT LEAST one of their reports matches ALL selected filters.
       return reports.some(r => {
         if (deptSet.size && (!r.department_id || !deptSet.has(r.department_id))) return false;
         if (subDeptSet.size && (!r.sub_department_id || !subDeptSet.has(r.sub_department_id))) return false;
+        if (desigSet.size && (!r.designation_name || !desigSet.has(r.designation_name))) return false;
         return true;
       });
     });

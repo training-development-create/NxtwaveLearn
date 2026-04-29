@@ -309,33 +309,41 @@ export function AdminAnalytics() {
     return true;
   });
 
-  const departmentOptions = Array.from(new Set(profilesAll.map(p => p.department || 'Unassigned'))).sort();
-  const subDepartmentOptions = Array.from(
-    new Set(
-      profilesAll
-        .filter((p) => department === 'all' || (p.department || 'Unassigned') === department)
-        .map((p) => p.sub_department || 'Unassigned'),
-    ),
-  ).sort();
+  // Mutually Narrowing Filter Options
+  const departmentOptions = Array.from(new Set(
+    profilesAll
+      .filter(p => (subDepartment === 'all' || (p.sub_department || 'Unassigned') === subDepartment))
+      .filter(p => (managerEmail === 'all' || (p.manager_email || p.manager_name || 'Unassigned') === managerEmail))
+      .filter(p => (designation === 'all' || (p.designation_name || 'Unassigned') === designation))
+      .map(p => p.department || 'Unassigned')
+  )).sort();
+
+  const subDepartmentOptions = Array.from(new Set(
+    profilesAll
+      .filter(p => (department === 'all' || (p.department || 'Unassigned') === department))
+      .filter(p => (managerEmail === 'all' || (p.manager_email || p.manager_name || 'Unassigned') === managerEmail))
+      .filter(p => (designation === 'all' || (p.designation_name || 'Unassigned') === designation))
+      .map(p => p.sub_department || 'Unassigned'),
+  )).sort();
+
   const managerOptions = Array.from(new Map(
     profilesAll
-      .filter((p) => (department === 'all' || (p.department || 'Unassigned') === department))
-      .filter((p) => (subDepartment === 'all' || (p.sub_department || 'Unassigned') === subDepartment))
+      .filter(p => (department === 'all' || (p.department || 'Unassigned') === department))
+      .filter(p => (subDepartment === 'all' || (p.sub_department || 'Unassigned') === subDepartment))
+      .filter(p => (designation === 'all' || (p.designation_name || 'Unassigned') === designation))
       .map(p => {
-    const key = p.manager_email || p.manager_name || 'Unassigned';
-    return [key, { key, label: p.manager_name || p.manager_email || 'Unassigned' }];
-  }),
+        const key = p.manager_email || p.manager_name || 'Unassigned';
+        return [key, { key, label: p.manager_name || p.manager_email || 'Unassigned' }];
+      }),
   ).values()).sort((a, b) => a.label.localeCompare(b.label));
 
-  // Designation options: filtered by the active dept / subdept / manager selection.
-  const designationOptions = Array.from(
-    new Set(
-      profilesAll
-        .filter(p => department === 'all' || (p.department || 'Unassigned') === department)
-        .filter(p => subDepartment === 'all' || (p.sub_department || 'Unassigned') === subDepartment)
-        .map(p => (p as ProfileMini).designation_name || 'Unassigned')
-    )
-  ).sort();
+  const designationOptions = Array.from(new Set(
+    profilesAll
+      .filter(p => (department === 'all' || (p.department || 'Unassigned') === department))
+      .filter(p => (subDepartment === 'all' || (p.sub_department || 'Unassigned') === subDepartment))
+      .filter(p => (managerEmail === 'all' || (p.manager_email || p.manager_name || 'Unassigned') === managerEmail))
+      .map(p => p.designation_name || 'Unassigned')
+  )).sort();
 
   useEffect(() => {
     if (managerEmail === 'all') return;
@@ -652,8 +660,8 @@ function EmployeeDetailModal({ user, onClose, focusCourseId }: { user: LearnerRo
           totalRuntime, totalWatched, lessonsTotal: ls.length, lessonsCompleted, avgScore, status, lessons: lessonRows,
         };
       });
-      // Video-centric: show only the selected course.
-      setDetails(out.filter(c => c.id === focusCourseId));
+      // Show all course activity for the user (remove focusCourseId filter)
+      setDetails(out);
       setLoading(false);
     })();
   }, [user.id, focusCourseId]);
