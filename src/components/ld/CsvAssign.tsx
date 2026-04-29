@@ -340,7 +340,15 @@ export function CsvAssignModal({ courseId, courseTitle, onClose, onAssigned, mod
     : null;
 
   return (
-    <div style={{position:'fixed', inset:0, background:'rgba(10,31,61,.6)', zIndex:2100, display:'grid', placeItems:'center', padding:24}}>
+    <div
+      // Stop click + mousedown from bubbling to ancestor modals (e.g. the
+      // EditAssignment modal in AdminModules wraps its overlay with onClick
+      // ={onClose}; without these guards, picking a file or hitting Cancel
+      // inside this modal would close the parent and unmount us mid-action.
+      onClick={e => e.stopPropagation()}
+      onMouseDown={e => e.stopPropagation()}
+      style={{position:'fixed', inset:0, background:'rgba(10,31,61,.6)', zIndex:2100, display:'grid', placeItems:'center', padding:24}}
+    >
       <div style={{background:'#fff', borderRadius:14, maxWidth:780, width:'100%', maxHeight:'88vh', overflow:'hidden', boxShadow:'0 20px 60px rgba(0,0,0,.3)', display:'flex', flexDirection:'column'}}>
         {/* Header */}
         <div style={{padding:'20px 26px 16px', borderBottom:'1px solid #EEF2F7', display:'flex', alignItems:'flex-start', gap:12}}>

@@ -650,6 +650,52 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
                 <div style={{fontSize:14, color:'#5B6A7D', marginTop:4}}>Auto-assigned to every employee. They'll get a notification.</div>
               </div>
               <div style={{padding:24}}>
+                {/* CSV bulk-assign — surfaced at the TOP of step 4 so admins
+                    see it before the picker. Disabled when "All employees"
+                    is selected (CSV is moot in that case). When the admin
+                    is targeting specific people, this is the fastest path. */}
+                {(() => {
+                  const csvDisabled = assignAll;
+                  return (
+                    <div style={{marginBottom:18, padding:'14px 16px', background: csvDisabled ? '#F7F9FC' : '#F2F9FF', border:`1px solid ${csvDisabled ? '#E2E8F0' : '#CCEAFF'}`, borderRadius:12, display:'flex', alignItems:'center', gap:12, opacity: csvDisabled ? 0.7 : 1}}>
+                      <div style={{fontSize:22}}>📥</div>
+                      <div style={{flex:1}}>
+                        <div style={{fontSize:13, fontWeight:800, color:'#0A1F3D', display:'flex', alignItems:'center', gap:8}}>
+                          Upload CSV &amp; Assign
+                          {csvMatched.length > 0 && !csvDisabled && (
+                            <span style={{padding:'2px 8px', background:'#E8F7EF', color:'#0F7C57', fontSize:10, fontWeight:700, borderRadius:99}}>
+                              {csvMatched.length} staged
+                            </span>
+                          )}
+                          {csvDisabled && (
+                            <span style={{padding:'2px 8px', background:'#EEF2F7', color:'#5B6A7D', fontSize:10, fontWeight:700, borderRadius:99}}>
+                              Disabled
+                            </span>
+                          )}
+                        </div>
+                        <div style={{fontSize:11.5, color:'#5B6A7D', marginTop:3, lineHeight:1.5}}>
+                          {csvDisabled
+                            ? 'Uncheck "All employees" below to assign by CSV. CSV upload is for hand-picked learner lists.'
+                            : csvMatched.length > 0
+                              ? 'These learners will be assigned and notified when you click Publish. Click below to replace or add more.'
+                              : 'Upload a Name / Email / Department CSV. Emails are validated, duplicates removed, and only learners in the directory are kept.'}
+                        </div>
+                      </div>
+                      {!csvDisabled && csvMatched.length > 0 && (
+                        <Btn variant="ghost" size="sm" onClick={()=>setCsvMatched([])}>Clear</Btn>
+                      )}
+                      <Btn
+                        variant={csvDisabled ? 'ghost' : 'primary'}
+                        size="sm"
+                        disabled={csvDisabled}
+                        onClick={()=>{ if (!csvDisabled) setCsvOpen(true); }}
+                      >
+                        {csvMatched.length > 0 ? 'Replace CSV' : 'Upload CSV & Assign'}
+                      </Btn>
+                    </div>
+                  );
+                })()}
+
                 <div style={{marginBottom:18, padding:16, border:'1px solid #EEF2F7', borderRadius:12, background:'#FAFBFD'}}>
                   <div style={{display:'flex', alignItems:'center', marginBottom:12}}>
                     <div>
@@ -657,7 +703,13 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
                       <div style={{fontSize:14, fontWeight:700, color:'#0A1F3D', marginTop:2}}>Pick who can see and complete this course</div>
                     </div>
                     <label style={{marginLeft:'auto', display:'flex', alignItems:'center', gap:8, cursor:'pointer', padding:'8px 12px', background: assignAll?'#E6F4FF':'#fff', borderRadius:8, border:`1.5px solid ${assignAll?'#0072FF':'#DDE4ED'}`}}>
-                      <input type="checkbox" checked={assignAll} onChange={e=>setAssignAll(e.target.checked)}/>
+                      <input type="checkbox" checked={assignAll} onChange={e=>{
+                        setAssignAll(e.target.checked);
+                        // Switching to "All employees" makes any CSV-staged
+                        // learners moot — drop them so they don't ghost-get
+                        // re-staged if the admin toggles back later.
+                        if (e.target.checked) setCsvMatched([]);
+                      }}/>
                       <span style={{fontSize:13, fontWeight:700, color: assignAll?'#0072FF':'#3B4A5E'}}>All employees</span>
                     </label>
                   </div>
@@ -725,32 +777,6 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
                     </div>
                   </div>
                 )}
-                {/* CSV bulk assignment — adds named learners on top of (or instead of)
-                    the picker scope. Works for BOTH new and existing courses: in the
-                    new-course flow the modal stages matched employees and the
-                    course_assignments rows are written atomically during publish(). */}
-                <div style={{marginBottom:14, padding:'12px 14px', background:'#F2F9FF', border:'1px solid #CCEAFF', borderRadius:10, display:'flex', alignItems:'center', gap:12}}>
-                  <div style={{fontSize:18}}>📥</div>
-                  <div style={{flex:1}}>
-                    <div style={{fontSize:13, fontWeight:700, color:'#0A1F3D'}}>
-                      Bulk-assign via CSV
-                      {csvMatched.length > 0 && (
-                        <span style={{marginLeft:8, padding:'2px 8px', background:'#E8F7EF', color:'#0F7C57', fontSize:10, fontWeight:700, borderRadius:99}}>
-                          {csvMatched.length} staged
-                        </span>
-                      )}
-                    </div>
-                    <div style={{fontSize:11, color:'#5B6A7D', marginTop:2}}>
-                      {csvMatched.length > 0
-                        ? 'These learners will be assigned and notified when you click Publish. Click below to replace or add more.'
-                        : 'Upload a Name / Email / Department CSV. Emails are validated, duplicates removed, and only learners in the directory are kept.'}
-                    </div>
-                  </div>
-                  {csvMatched.length > 0 && (
-                    <Btn variant="ghost" size="sm" onClick={()=>setCsvMatched([])}>Clear</Btn>
-                  )}
-                  <Btn variant="ghost" size="sm" onClick={()=>setCsvOpen(true)}>Upload CSV &amp; Assign</Btn>
-                </div>
                 {error && <div style={{padding:'10px 12px', background:'#FCE1DE', color:'#C2261D', borderRadius:8, fontSize:13, fontWeight:500, marginBottom:14}}>{error}</div>}
                 <div style={{display:'flex', gap:10}}>
                   <Btn variant="ghost" onClick={()=>setStep(3)}>← Back</Btn>
