@@ -3,11 +3,13 @@ import { useMCQ, useCourseLessons, recordAttempt, saveLessonProgress } from "./q
 import { useAuth } from "./auth";
 import { supabase } from "@/integrations/supabase/client";
 import { Btn, Card, Chip, ProgressBar, EmptyState } from "./ui";
+import { AgreementSign } from "./AgreementSign";
 import type { Nav, AppState } from "./App";
 
 export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppState; setState: (s: AppState) => void }) {
-  const { user } = useAuth();
-  const [course, setCourse] = useState<{ id: string; title: string } | null>(null);
+  const { user, profile } = useAuth();
+  const [course, setCourse] = useState<{ id: string; title: string; agreement_required: boolean; agreement_pdf_path: string | null } | null>(null);
+  const [hasSignedAgreement, setHasSignedAgreement] = useState(false);
   const { lessons } = useCourseLessons(state.course, user?.id ?? null);
   const activeLessonId = state.activeLesson;
   const lesson = lessons.find(l => l.id === activeLessonId);
@@ -15,17 +17,39 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
   const nextLesson = lessons[lessonIdx + 1];
   const { questions, loading } = useMCQ(activeLessonId);
 
-  const [stage, setStage] = useState<'intro'|'quiz'|'result'>('intro');
+  // 'agreement' stage = post-quiz, learner must read & sign before completion.
+  const [stage, setStage] = useState<'intro'|'quiz'|'result'|'agreement'>('intro');
   const [idx, setIdx] = useState(0);
+  // answers is sized to the FULL question list so we can score the whole
+  // assessment even when retaking only the wrong ones. Indices match
+  // questions[i].
   const [answers, setAnswers] = useState<(number|null)[]>([]);
   const [flagged, setFlagged] = useState<Set<number>>(new Set());
   const [submitting, setSubmitting] = useState(false);
+  // When set, the quiz is operating in "retake wrong only" mode. Contains
+  // the original question indices that need to be re-answered. Empty array
+  // means full quiz.
+  const [retakeIdx, setRetakeIdx] = useState<number[]>([]);
+
+  // The active list of questions for THIS run — either every question (first
+  // attempt) or only the previously-wrong ones (subsequent retakes).
+  const activeList: { question: typeof questions[number]; originalIdx: number }[] =
+    retakeIdx.length > 0
+      ? retakeIdx.map(i => ({ question: questions[i], originalIdx: i }))
+      : questions.map((q, i) => ({ question: q, originalIdx: i }));
 
   useEffect(() => { if (questions.length) setAnswers(Array(questions.length).fill(null)); }, [questions.length]);
   useEffect(() => {
     if (!state.course) return;
-    supabase.from('courses').select('id, title').eq('id', state.course).maybeSingle().then(({ data }) => setCourse(data));
+    supabase.from('courses').select('id, title, agreement_required, agreement_pdf_path').eq('id', state.course).maybeSingle().then(({ data }) => setCourse(data as typeof course));
   }, [state.course]);
+
+  // Has the learner already signed the agreement for this course?
+  useEffect(() => {
+    if (!user || !state.course) return;
+    supabase.from('agreement_signatures').select('id').eq('user_id', user.id).eq('course_id', state.course).maybeSingle()
+      .then(({ data }) => setHasSignedAgreement(!!data));
+  }, [user, state.course]);
 
   if (!state.course || !state.activeLesson) {
     return <div style={{padding:40}}><EmptyState icon="🧭" title="No quiz selected" sub="Pick a video first." action={<Btn onClick={()=>onNav('courses')}>Back to courses</Btn>}/></div>;
@@ -46,11 +70,11 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
             <div style={{position:'relative'}}>
               <div style={{fontSize:11, fontWeight:600, letterSpacing:'.12em', color:'#7FDBFF', textTransform:'uppercase'}}>Assessment · {course.title}</div>
               <h2 style={{fontSize:30, color:'#fff', margin:'10px 0 8px', letterSpacing:'-.02em', fontWeight:700}}>{lesson.title}</h2>
-              <p style={{color:'#9EC9F0', fontSize:14, margin:0, lineHeight:1.55, maxWidth:540}}>Answer {questions.length} quick questions to confirm you've understood this video. Pass (70%) to unlock the next one.</p>
+              <p style={{color:'#9EC9F0', fontSize:14, margin:0, lineHeight:1.55, maxWidth:540}}>Answer {questions.length} questions. <strong style={{color:'#fff'}}>Every answer must be correct (100%) to pass.</strong> Wrong answers are returned to you to retry — you do NOT have to redo correct ones.</p>
             </div>
           </div>
           <div style={{padding:'24px 40px', display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:20, borderBottom:'1px solid #EEF2F7'}}>
-            {[[String(questions.length),'Questions'],['70%','Passing score'],['∞','Attempts allowed']].map(([k,v]) => (
+            {[[String(questions.length),'Questions'],['100%','Required to pass'],['∞','Attempts allowed']].map(([k,v]) => (
               <div key={v}>
                 <div style={{fontSize:22, fontWeight:700, color:'#0A1F3D', letterSpacing:'-.02em'}}>{k}</div>
                 <div style={{fontSize:12, color:'#5B6A7D', marginTop:2}}>{v}</div>
@@ -59,7 +83,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
           </div>
           <div style={{padding:'22px 40px 28px'}}>
             <ul style={{margin:0, padding:0, listStyle:'none', display:'flex', flexDirection:'column', gap:8, fontSize:13, color:'#3B4A5E'}}>
-              {['You can flag questions and come back','Navigate freely between questions','Results are shared with your L&D admin','Failing requires rewatching the video before you can retry'].map(s => (
+              {['You can flag questions and come back','Navigate freely between questions','Results are shared with your L&D admin','Wrong answers come back as a shorter retake — you don\'t restart from scratch','You must answer every question correctly to pass'].map(s => (
                 <li key={s} style={{display:'flex', gap:10}}><span style={{color:'#17A674'}}>✓</span>{s}</li>
               ))}
             </ul>
@@ -73,11 +97,53 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
     );
   }
 
+  if (stage === 'agreement') {
+    if (!course.agreement_pdf_path) {
+      // No agreement uploaded for this course — skip straight to next lesson.
+      if (nextLesson) { setState({ ...state, activeLesson: nextLesson.id }); onNav('player'); }
+      else { onNav('courses'); }
+      return null;
+    }
+    return (
+      <AgreementSign
+        courseId={course.id}
+        courseTitle={course.title}
+        agreementPdfPath={course.agreement_pdf_path}
+        fullName={profile?.full_name || ''}
+        onSigned={() => {
+          setHasSignedAgreement(true);
+          if (nextLesson) { setState({ ...state, activeLesson: nextLesson.id }); onNav('player'); }
+          else { onNav('courses'); }
+        }}
+        onCancel={() => setStage('result')}
+      />
+    );
+  }
+
   if (stage === 'result') {
     const correct = answers.filter((a,i) => a === questions[i].correct).length;
     const pct = Math.round((correct / questions.length) * 100);
-    const pass = pct >= 70;
-    const onRetry = () => { setAnswers(Array(questions.length).fill(null)); setIdx(0); setStage('quiz'); };
+    // Compliance rule: 100% required. No partial pass.
+    const pass = pct === 100;
+    const wrongIndices = answers
+      .map((a, i) => (a === questions[i].correct ? -1 : i))
+      .filter(i => i !== -1);
+    const onRetryAll = () => {
+      setAnswers(Array(questions.length).fill(null));
+      setRetakeIdx([]);
+      setIdx(0);
+      setStage('quiz');
+    };
+    // Retake-wrong-only: keep correct answers, blank only the wrong ones,
+    // and show only those questions in the next attempt.
+    const onRetryWrong = () => {
+      const next = [...answers];
+      wrongIndices.forEach(i => { next[i] = null; });
+      setAnswers(next);
+      setRetakeIdx(wrongIndices);
+      setIdx(0);
+      setStage('quiz');
+    };
     const onNext = () => { if (nextLesson) { setState({ ...state, activeLesson: nextLesson.id }); onNav('player'); } else onNav('courses'); };
     return (
       <div style={{padding:'28px 40px 48px', maxWidth:1080, animation:'fadeUp .4s'}}>
@@ -87,7 +153,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
               <div style={{width:52, height:52, borderRadius:14, background:'rgba(255,255,255,.14)', display:'grid', placeItems:'center', fontSize:24}}>{pass ? '✓' : '!'}</div>
               <div style={{fontSize:11, fontWeight:600, letterSpacing:'.12em', color:pass?'#D9F4E6':'#7FDBFF', marginTop:18, textTransform:'uppercase'}}>{pass?'Passed':'Not yet passed'}</div>
               <div style={{fontSize:48, fontWeight:700, letterSpacing:'-.03em', marginTop:4, lineHeight:1}}>{pct}%</div>
-              <div style={{fontSize:13, color:pass?'#D9F4E6':'#C8DDF4', marginTop:6}}>{correct} of {questions.length} correct · {pass ? (nextLesson ? 'Next video unlocked' : 'Course complete') : '70% needed to pass'}</div>
+              <div style={{fontSize:13, color:pass?'#D9F4E6':'#C8DDF4', marginTop:6}}>{correct} of {questions.length} correct · {pass ? (nextLesson ? 'Next video unlocked' : 'Course complete') : `${wrongIndices.length} wrong — retake to reach 100%`}</div>
             </div>
             <div style={{padding:'30px 40px 32px'}}>
               {/* Show only the final result + score; correct answers are intentionally
@@ -107,12 +173,23 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
                 </div>
               </div>
               <div style={{marginTop:18, fontSize:12, color:'#5B6A7D'}}>
-                Correct answers are not displayed. {pass ? 'Great work — your completion is recorded.' : 'Rewatch the video and retry to improve your score.'}
+                Correct answers are not displayed. {pass
+                  ? 'Great work — your completion is recorded.'
+                  : `You answered ${wrongIndices.length} question${wrongIndices.length === 1 ? '' : 's'} incorrectly. Retake just those — your correct answers are kept.`}
               </div>
-              <div style={{marginTop:22, display:'flex', gap:10}}>
-                {pass
-                  ? <Btn size="lg" onClick={onNext}>{nextLesson ? 'Start next video →' : 'Back to courses →'}</Btn>
-                  : <Btn size="lg" onClick={onRetry}>Retry quiz</Btn>}
+              <div style={{marginTop:22, display:'flex', gap:10, flexWrap:'wrap'}}>
+                {pass ? (
+                  // Compliance gate: if the course requires an agreement and
+                  // the learner hasn't signed yet, route to the agreement step.
+                  course.agreement_required && course.agreement_pdf_path && !hasSignedAgreement
+                    ? <Btn size="lg" onClick={() => setStage('agreement')}>Continue to agreement ✍️ →</Btn>
+                    : <Btn size="lg" onClick={onNext}>{nextLesson ? 'Start next video →' : 'Back to courses →'}</Btn>
+                ) : (
+                  <>
+                    <Btn size="lg" onClick={onRetryWrong}>Retake {wrongIndices.length} wrong question{wrongIndices.length === 1 ? '' : 's'} →</Btn>
+                    <Btn variant="ghost" size="lg" onClick={onRetryAll}>Restart full quiz</Btn>
+                  </>
+                )}
                 <Btn variant="ghost" size="lg" onClick={()=>onNav('courses')}>Back to courses</Btn>
               </div>
             </div>
@@ -138,18 +215,29 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
     );
   }
 
-  const q = questions[idx];
-  const selected = answers[idx];
-  const setAns = (v: number) => { const a = [...answers]; a[idx] = v; setAnswers(a); };
+  // `idx` is the position within activeList (NOT the original question index).
+  // `originalIdx` is the position in the full questions[] array — used for
+  // reading/writing the answer slot and scoring.
+  const activeEntry = activeList[idx] ?? activeList[0];
+  const q = activeEntry.question;
+  const originalIdx = activeEntry.originalIdx;
+  const selected = answers[originalIdx];
+  const setAns = (v: number) => { const a = [...answers]; a[originalIdx] = v; setAnswers(a); };
+  // In retake mode, the answers we care about for "all answered?" are the
+  // active subset only. Outside retake, it's all of them.
+  const allActiveAnswered = activeList.every(({ originalIdx: oi }) => answers[oi] !== null && answers[oi] !== undefined);
+  const totalQs = activeList.length;
 
   const submit = async () => {
     if (!user || !lesson) return;
     setSubmitting(true);
+    // Score is always against the FULL question list (correct answers from
+    // earlier rounds carry forward — that's the whole point of retake-wrong).
     const correct = answers.filter((a, i) => a === questions[i].correct).length;
     const pct = Math.round((correct / questions.length) * 100);
-    const pass = pct >= 70;
+    // 100% required.
+    const pass = pct === 100;
     await recordAttempt(user.id, lesson.id, answers as number[], correct, questions.length, pass);
-    // Mark the lesson as completed ONLY when the learner passes the quiz.
     if (pass) {
       await saveLessonProgress(user.id, lesson.id, lesson.duration, true);
     }
@@ -172,10 +260,13 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
       <div style={{display:'grid', gridTemplateColumns:'1fr 280px', gap:20}}>
         <Card pad={0}>
           <div style={{padding:'18px 26px', borderBottom:'1px solid #EEF2F7', display:'flex', alignItems:'center', gap:14}}>
-            <div style={{fontSize:12, fontWeight:700, color:'#8A97A8', letterSpacing:'.06em', textTransform:'uppercase'}}>Question {idx+1} of {questions.length}</div>
-            <div style={{flex:1}}><ProgressBar value={((idx+1)/questions.length)*100} height={4}/></div>
-            <button onClick={()=>{ const f = new Set(flagged); f.has(idx) ? f.delete(idx) : f.add(idx); setFlagged(f); }} style={{padding:'5px 11px', background: flagged.has(idx)?'#FEEFD3':'#F7F9FC', color: flagged.has(idx)?'#B8660F':'#5B6A7D', border:0, borderRadius:8, fontSize:12, fontWeight:600, cursor:'pointer'}}>
-              {flagged.has(idx) ? 'Flagged' : 'Flag'}
+            <div style={{fontSize:12, fontWeight:700, color:'#8A97A8', letterSpacing:'.06em', textTransform:'uppercase'}}>
+              Question {idx+1} of {totalQs}
+              {retakeIdx.length > 0 && <span style={{marginLeft:8, padding:'2px 8px', background:'#FEEFD3', color:'#B8660F', borderRadius:4, fontSize:10}}>RETAKE WRONG</span>}
+            </div>
+            <div style={{flex:1}}><ProgressBar value={((idx+1)/totalQs)*100} height={4}/></div>
+            <button onClick={()=>{ const f = new Set(flagged); f.has(originalIdx) ? f.delete(originalIdx) : f.add(originalIdx); setFlagged(f); }} style={{padding:'5px 11px', background: flagged.has(originalIdx)?'#FEEFD3':'#F7F9FC', color: flagged.has(originalIdx)?'#B8660F':'#5B6A7D', border:0, borderRadius:8, fontSize:12, fontWeight:600, cursor:'pointer'}}>
+              {flagged.has(originalIdx) ? 'Flagged' : 'Flag'}
             </button>
           </div>
           <div style={{padding:'26px 30px 22px'}}>
@@ -195,9 +286,9 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
           <div style={{padding:'14px 26px', borderTop:'1px solid #EEF2F7', display:'flex', alignItems:'center'}}>
             <Btn variant="ghost" disabled={idx===0} onClick={()=>setIdx(i=>i-1)}>← Previous</Btn>
             <div style={{marginLeft:'auto'}}>
-              {idx<questions.length-1
-                ? <Btn onClick={()=>setIdx(i=>i+1)} disabled={selected===null}>Next →</Btn>
-                : <Btn variant="success" onClick={submit} disabled={answers.some(a=>a===null) || submitting}>{submitting?'Submitting…':'Submit'}</Btn>}
+              {idx<totalQs-1
+                ? <Btn onClick={()=>setIdx(i=>i+1)} disabled={selected===null || selected === undefined}>Next →</Btn>
+                : <Btn variant="success" onClick={submit} disabled={!allActiveAnswered || submitting}>{submitting?'Submitting…':'Submit'}</Btn>}
             </div>
           </div>
         </Card>
@@ -206,17 +297,19 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
           <Card pad={16}>
             <div style={{fontSize:11, fontWeight:600, color:'#8A97A8', letterSpacing:'.06em', marginBottom:10, textTransform:'uppercase'}}>Questions</div>
             <div style={{display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:6}}>
-              {questions.map((_, i) => {
-                const answered = answers[i] !== null && answers[i] !== undefined;
+              {activeList.map((entry, i) => {
+                const oi = entry.originalIdx;
+                const answered = answers[oi] !== null && answers[oi] !== undefined;
                 const current = i === idx;
-                const flag = flagged.has(i);
+                const flag = flagged.has(oi);
                 return (
-                  <button key={i} onClick={()=>setIdx(i)} style={{aspectRatio:'1/1', borderRadius:8, border: current?'2px solid #0072FF':'1px solid #EEF2F7', background: flag?'#FEEFD3':answered?'#E6F4FF':'#fff', color: flag?'#B8660F':answered?'#0072FF':'#5B6A7D', fontSize:13, fontWeight:700, cursor:'pointer'}}>{i+1}</button>
+                  <button key={oi} onClick={()=>setIdx(i)} title={`Q${oi+1} from full quiz`} style={{aspectRatio:'1/1', borderRadius:8, border: current?'2px solid #0072FF':'1px solid #EEF2F7', background: flag?'#FEEFD3':answered?'#E6F4FF':'#fff', color: flag?'#B8660F':answered?'#0072FF':'#5B6A7D', fontSize:13, fontWeight:700, cursor:'pointer'}}>{i+1}</button>
                 );
               })}
             </div>
             <div style={{marginTop:14, fontSize:12, color:'#5B6A7D', lineHeight:1.6}}>
-              <div>Passing score: <b style={{color:'#0A1F3D'}}>70%</b></div>
+              <div>Required score: <b style={{color:'#0A1F3D'}}>100%</b></div>
+              {retakeIdx.length > 0 && <div style={{marginTop:6, padding:'6px 8px', background:'#FEEFD3', color:'#B8660F', borderRadius:6, fontSize:11, fontWeight:600}}>Retake mode: only your {retakeIdx.length} wrong answer{retakeIdx.length === 1 ? '' : 's'}</div>}
             </div>
           </Card>
         </div>

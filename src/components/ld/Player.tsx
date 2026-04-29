@@ -16,17 +16,44 @@ const lessonRatio = (duration: number, watched: number, completed: boolean) => {
 export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState; setState: (s: AppState) => void }) {
   const { user } = useAuth();
   const courseId = state.course;
-  const [course, setCourse] = useState<{ id: string; title: string; instructor: string; emoji: string; duration_label: string } | null>(null);
+  const [course, setCourse] = useState<{ id: string; title: string; instructor: string; emoji: string; duration_label: string; agreement_required: boolean; agreement_pdf_path: string | null } | null>(null);
   const { lessons, progress, attemptsByLesson, loading, reload } = useCourseLessons(courseId, user?.id ?? null);
   const [videoSrc, setVideoSrc] = useState<string | null>(null);
+  const [hasSignedAgreement, setHasSignedAgreement] = useState(false);
+  const [showComplianceModal, setShowComplianceModal] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const frameRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!courseId) return;
-    supabase.from('courses').select('id, title, instructor, emoji, duration_label').eq('id', courseId).maybeSingle()
+    supabase.from('courses').select('id, title, instructor, emoji, duration_label, agreement_required, agreement_pdf_path').eq('id', courseId).maybeSingle()
       .then(({ data }) => setCourse(data));
   }, [courseId]);
+
+  // One-time compliance notice per (user, course). Stored in localStorage so
+  // we don't nag returning learners. The modal still appears the first time
+  // a user opens any new course they're enrolled in.
+  useEffect(() => {
+    if (!courseId || !user) return;
+    const key = `compliance-ack-${user.id}-${courseId}`;
+    if (typeof window !== 'undefined' && !window.localStorage.getItem(key)) {
+      setShowComplianceModal(true);
+    }
+  }, [courseId, user]);
+
+  // Has the user signed this course's agreement (if any)?
+  useEffect(() => {
+    if (!user || !courseId) { setHasSignedAgreement(false); return; }
+    supabase.from('agreement_signatures').select('id').eq('user_id', user.id).eq('course_id', courseId).maybeSingle()
+      .then(({ data }) => setHasSignedAgreement(!!data));
+  }, [user, courseId]);
+
+  const acknowledgeCompliance = () => {
+    if (user && courseId && typeof window !== 'undefined') {
+      window.localStorage.setItem(`compliance-ack-${user.id}-${courseId}`, '1');
+    }
+    setShowComplianceModal(false);
+  };
 
   const locks = lessons.map((_, idx) => {
     if (idx === 0) return false;
@@ -286,8 +313,24 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
       )
     : 0;
 
+  // Compliance progression for THIS lesson
+  const lessonProgress = lesson ? progress[lesson.id] : null;
+  const lessonAttempts = lesson ? (attemptsByLesson[lesson.id] || []) : [];
+  const stepVideoDone = !!lessonProgress?.completed || (DUR > 0 && (lessonProgress?.watched_seconds ?? 0) >= DUR);
+  const stepQuizDone = lessonAttempts.some(a => a.passed);
+  const agreementGate = !!course?.agreement_required;
+  const stepAgreementDone = !agreementGate || hasSignedAgreement;
+  const stepCompleted = stepVideoDone && stepQuizDone && stepAgreementDone;
+
   return (
     <div style={{padding:'24px 36px 48px', animation:'fadeUp .3s ease-out', display:'grid', gridTemplateColumns:'1fr 340px', gap:20}}>
+      {showComplianceModal && (
+        <ComplianceNoticeModal
+          courseTitle={course.title}
+          agreementRequired={agreementGate}
+          onAcknowledge={acknowledgeCompliance}
+        />
+      )}
       <div>
         <div style={{display:'flex', alignItems:'center', gap:8, marginBottom:14, fontSize:12, color:'#5B6A7D'}}>
           <a onClick={()=>onNav('courses')} style={{cursor:'pointer'}}>My Courses</a>
@@ -296,6 +339,16 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
           <span>›</span>
           <span style={{color:'#0A1F3D', fontWeight:600}}>Video {lessonIdx+1}</span>
         </div>
+
+        {/* Compliance step indicator: Watch → Quiz → Sign → Done */}
+        <ComplianceStepIndicator
+          videoDone={stepVideoDone}
+          quizDone={stepQuizDone}
+          agreementRequired={agreementGate}
+          agreementDone={stepAgreementDone}
+          completed={stepCompleted}
+        />
+
 
         <div ref={frameRef} style={{position:'relative', background:'#0A1F3D', borderRadius:16, overflow:'hidden', aspectRatio:'16/9', boxShadow:'0 12px 32px rgba(0,42,75,.15)'}}>
           {videoSrc ? (
@@ -449,3 +502,68 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
     </div>
   );
 }
+
+// =============================================================================
+// Compliance UI helpers
+// =============================================================================
+
+function ComplianceNoticeModal({ courseTitle, agreementRequired, onAcknowledge }: { courseTitle: string; agreementRequired: boolean; onAcknowledge: () => void }) {
+  const tips = [
+    { icon: '🎬', text: 'You must watch the full video — no skipping or scrubbing ahead.' },
+    { icon: '🎯', text: 'You must score 100% in the assessment to pass.' },
+    { icon: '↩️', text: 'Wrong answers come back to you for retake — your correct ones are kept.' },
+    ...(agreementRequired ? [{ icon: '✍️', text: 'You must read the entire agreement and sign it before completion.' }] : []),
+    { icon: '🛑', text: 'Switching tabs or windows will pause the video automatically.' },
+  ];
+  return (
+    <div style={{position:'fixed', inset:0, background:'rgba(10,31,61,.6)', zIndex:2000, display:'grid', placeItems:'center', padding:24}}>
+      <div style={{background:'#fff', borderRadius:14, maxWidth:520, width:'100%', overflow:'hidden', boxShadow:'0 20px 60px rgba(0,0,0,.3)'}}>
+        <div style={{padding:'24px 28px 20px', background:'linear-gradient(135deg,#0A1F3D,#0072FF)', color:'#fff'}}>
+          <div style={{fontSize:11, fontWeight:700, letterSpacing:'.12em', color:'#9EC9F0', textTransform:'uppercase'}}>Compliance training</div>
+          <div style={{fontSize:18, fontWeight:800, marginTop:6, letterSpacing:'-.01em'}}>{courseTitle}</div>
+          <div style={{fontSize:12, color:'#C8DDF4', marginTop:6}}>Please read the rules below before you begin.</div>
+        </div>
+        <div style={{padding:'20px 28px'}}>
+          <ul style={{margin:0, padding:0, listStyle:'none', display:'flex', flexDirection:'column', gap:12}}>
+            {tips.map((t, i) => (
+              <li key={i} style={{display:'flex', gap:12, fontSize:13, color:'#3B4A5E', lineHeight:1.5}}>
+                <span style={{fontSize:16, flexShrink:0}}>{t.icon}</span>
+                <span>{t.text}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+        <div style={{padding:'14px 28px 22px', display:'flex', justifyContent:'flex-end'}}>
+          <Btn size="lg" onClick={onAcknowledge}>I understand — let's begin</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ComplianceStepIndicator({ videoDone, quizDone, agreementRequired, agreementDone, completed }: { videoDone: boolean; quizDone: boolean; agreementRequired: boolean; agreementDone: boolean; completed: boolean }) {
+  const steps = [
+    { label: 'Watch video', done: videoDone },
+    { label: 'Pass assessment', done: quizDone },
+    ...(agreementRequired ? [{ label: 'Sign agreement', done: agreementDone }] : []),
+    { label: 'Completed', done: completed },
+  ];
+  return (
+    <div style={{display:'flex', alignItems:'center', gap:8, marginBottom:14, padding:'10px 14px', background:'#fff', border:'1px solid #EEF2F7', borderRadius:10}}>
+      {steps.map((s, i) => (
+        <div key={s.label} style={{display:'flex', alignItems:'center', gap:8, flex:1}}>
+          <div style={{display:'flex', alignItems:'center', gap:8, flex:1}}>
+            <div style={{width:24, height:24, borderRadius:99, background: s.done ? '#17A674' : '#EEF2F7', color: s.done ? '#fff' : '#8A97A8', display:'grid', placeItems:'center', fontWeight:800, fontSize:12, flexShrink:0}}>
+              {s.done ? '✓' : i + 1}
+            </div>
+            <div style={{fontSize:12, fontWeight: s.done ? 700 : 600, color: s.done ? '#0A1F3D' : '#5B6A7D', whiteSpace:'nowrap'}}>{s.label}</div>
+          </div>
+          {i < steps.length - 1 && (
+            <div style={{flex:1, height:2, background: s.done ? '#17A674' : '#EEF2F7', borderRadius:99}}/>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+

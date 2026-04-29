@@ -38,6 +38,10 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
   const [videoDuration, setVideoDuration] = useState(0);
   const [uploadPct, setUploadPct] = useState(0);
 
+  // Optional agreement PDF — when provided, learners must sign it after the
+  // quiz before the course is marked complete.
+  const [agreementFile, setAgreementFile] = useState<File | null>(null);
+
   const [questions, setQuestions] = useState<Q[]>([]);
   const [parsing, setParsing] = useState(false);
   const [parseError, setParseError] = useState<string | null>(null);
@@ -317,6 +321,24 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
         }));
         const { error: e3 } = await supabase.from('mcq_questions').insert(rows);
         if (e3) throw e3;
+      }
+
+      // ----- Optional agreement PDF upload -----
+      // When provided, uploads to the 'agreements' storage bucket and stamps
+      // the path + agreement_required=true on the course. Learners will then
+      // be required to scroll & sign before completion.
+      if (agreementFile) {
+        const aExt = agreementFile.name.split('.').pop() || 'pdf';
+        const aPath = `${courseId}/agreement-${crypto.randomUUID()}.${aExt}`;
+        const { error: aUpErr } = await supabase.storage.from('agreements').upload(aPath, agreementFile, {
+          upsert: false,
+          contentType: agreementFile.type || 'application/pdf',
+        });
+        if (aUpErr) throw aUpErr;
+        const { error: cUpErr } = await supabase.from('courses')
+          .update({ agreement_pdf_path: aPath, agreement_required: true })
+          .eq('id', courseId);
+        if (cUpErr) throw cUpErr;
       }
 
       // ----- Write course_assignments for the picker selections.
@@ -606,6 +628,36 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
                   <Summary label="Duration" value={`${Math.floor(videoDuration/60)}m ${videoDuration%60}s`}/>
                   <Summary label="Quiz questions" value={`${questions.filter(qq=>qq.q.trim()).length}`}/>
                 </div>
+
+                {/* Optional agreement / policy PDF — gates course completion when set */}
+                <div style={{marginBottom:18, padding:16, border:'1px solid #EEF2F7', borderRadius:12, background:'#FAFBFD'}}>
+                  <div style={{display:'flex', alignItems:'center', marginBottom:10}}>
+                    <div>
+                      <div className="eyebrow">AGREEMENT / POLICY (OPTIONAL)</div>
+                      <div style={{fontSize:13, color:'#5B6A7D', marginTop:2}}>If uploaded, learners must scroll & sign before the course is marked complete.</div>
+                    </div>
+                  </div>
+                  <label style={{display:'block', padding:18, border:`2px dashed ${agreementFile?'#17A674':'#CCEAFF'}`, background: agreementFile?'#F0FCF5':'#F7FBFF', borderRadius:10, cursor:'pointer', textAlign:'center'}}>
+                    <input type="file" accept="application/pdf,.pdf" style={{display:'none'}} onChange={e=>setAgreementFile(e.target.files?.[0] || null)}/>
+                    {agreementFile ? (
+                      <div>
+                        <div style={{fontSize:24, marginBottom:4}}>📄</div>
+                        <div style={{fontSize:13, fontWeight:700, color:'#0A1F3D'}}>{agreementFile.name}</div>
+                        <div style={{fontSize:11, color:'#5B6A7D', marginTop:2}}>{(agreementFile.size/1024).toFixed(0)} KB · click to change</div>
+                      </div>
+                    ) : (
+                      <div>
+                        <div style={{fontSize:24, marginBottom:4}}>📋</div>
+                        <div style={{fontSize:13, fontWeight:700, color:'#0A1F3D'}}>Click to upload agreement PDF</div>
+                        <div style={{fontSize:11, color:'#5B6A7D', marginTop:2}}>Skip for courses that don't need a signed agreement</div>
+                      </div>
+                    )}
+                  </label>
+                  {agreementFile && (
+                    <button onClick={()=>setAgreementFile(null)} style={{marginTop:10, padding:'4px 10px', background:'#fff', border:'1px solid #FCE1DE', color:'#C2261D', borderRadius:6, fontSize:11, fontWeight:600, cursor:'pointer'}}>Remove agreement</button>
+                  )}
+                </div>
+
                 {saving && uploadPct > 0 && (
                   <div style={{marginBottom:14}}>
                     <div style={{fontSize:12, color:'#5B6A7D', marginBottom:6}}>Uploading video… {uploadPct}%</div>
