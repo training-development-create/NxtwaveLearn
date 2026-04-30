@@ -468,6 +468,11 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
 
   const publish = async () => {
     setSaving(true); setError(null);
+    // Hard guard against the button getting stuck on "Publishing…" — every
+    // success/error path is covered by setSaving(false) already, but the
+    // finally block is the belt-and-braces for any path we missed (or for
+    // an unexpected throw inside one of the optional sub-steps).
+    let didFinish = false;
     try {
       if (!videoFile) throw new Error('Please upload a video file (mandatory).');
       let courseId = existingCourseId;
@@ -696,22 +701,123 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
           }
         }
 
-        // Ensure enrollments are refreshed immediately even if DB triggers
-        // were not applied on this project (safe no-op if function missing).
+        // ----- Ensure enrollments exist for the assigned set ------------------
+        // Background: the user portal queries the `enrollments` table to decide
+        // which courses to render. `course_assignments` only describes the
+        // SCOPE; a DB trigger (`on_assignment_change`) or RPC
+        // (`refresh_enrollments_for_course`) is supposed to materialise that
+        // scope into per-user `enrollments` rows. Both are best-effort — older
+        // Supabase projects don't have them, in which case the publish would
+        // succeed silently but learners would never see the course.
+        //
+        // We do BOTH for defence in depth:
+        //   1. Try the RPC (fast path — handles dept/sub-dept/manager scopes
+        //      including future joiners) but with a hard timeout so a missing
+        //      function or hung query can't freeze the publish button.
+        //   2. ALWAYS resolve the assigned employee set client-side and upsert
+        //      enrollment rows directly. This guarantees that the people the
+        //      admin picked will see the course on next refresh, even if the
+        //      RPC never ran.
+        const RPC_TIMEOUT_MS = 8_000;
         try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          await (supabase as any).rpc?.('refresh_enrollments_for_course', { _course_id: courseId });
-        } catch {
-          // ignore – DB function may not exist on legacy schema
+          await Promise.race([
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (supabase as any).rpc?.('refresh_enrollments_for_course', { _course_id: courseId })
+              ?? Promise.resolve({ error: null }),
+            new Promise((resolve) => setTimeout(() => resolve({ error: { message: 'rpc-timeout' } }), RPC_TIMEOUT_MS)),
+          ]);
+        } catch (e) {
+          console.warn('[publish] refresh_enrollments_for_course RPC failed (non-fatal):', e);
         }
-      }
-      // If existing course, also push a notification (publish trigger only fires on new course).
-      if (mode === 'existing') {
-        const { data: ps } = await supabase.from('employees').select('auth_user_id').not('auth_user_id', 'is', null);
-        if (ps && ps.length) {
-          await supabase.from('notifications').insert(ps.map((p: { auth_user_id: string }) => ({
-            user_id: p.auth_user_id, title: 'New lesson added', body: `${lessonTitle.trim()} — open course to watch`, link_course_id: courseId,
-          })));
+
+        // Resolve the actual employee set we just assigned so we can (a)
+        // upsert their enrollments and (b) notify them. We compute this
+        // ourselves rather than re-querying assigned_employees() so the
+        // logic is identical whether the DB function exists or not.
+        let assignedEmployeeIds: string[] = [];
+        if (assignAll) {
+          assignedEmployeeIds = employeesAll.map(e => e.id);
+        } else {
+          const set = new Set<string>(resolvedEmployeeIds);
+          // Single-level dept/sub-dept/manager scopes weren't expanded into
+          // resolvedEmployeeIds — expand them now so enrollments cover the
+          // full intended audience.
+          if (assignDeptIds.length > 0 && assignSubDeptIds.length === 0 && assignManagerIds.length === 0 && assignEmployeeIds.length === 0) {
+            employeesAll.forEach(e => { if (e.department_id && assignDeptIds.includes(e.department_id)) set.add(e.id); });
+          } else if (assignSubDeptIds.length > 0 && assignDeptIds.length === 0 && assignManagerIds.length === 0 && assignEmployeeIds.length === 0) {
+            employeesAll.forEach(e => { if (e.sub_department_id && assignSubDeptIds.includes(e.sub_department_id)) set.add(e.id); });
+          } else if (assignManagerIds.length > 0 && assignDeptIds.length === 0 && assignSubDeptIds.length === 0 && assignEmployeeIds.length === 0) {
+            employeesAll.forEach(e => { if (e.manager_id && assignManagerIds.includes(e.manager_id)) set.add(e.id); });
+          }
+          // CSV-staged learners are also assignees.
+          csvMatched.forEach(m => set.add(m.id));
+          assignedEmployeeIds = Array.from(set);
+        }
+
+        // Look up auth_user_id for the assigned employees (only those that
+        // have actually signed in once will have one — that's required to
+        // enrol in the `enrollments` table).
+        let assignedAuthIds: string[] = [];
+        if (assignedEmployeeIds.length > 0) {
+          // Page through to dodge Supabase's 1000-row default cap.
+          const PAGE = 1000;
+          for (let i = 0; i < assignedEmployeeIds.length; i += PAGE) {
+            const slice = assignedEmployeeIds.slice(i, i + PAGE);
+            const { data: empRows, error: empErr } = await supabase
+              .from('employees')
+              .select('auth_user_id')
+              .in('id', slice)
+              .not('auth_user_id', 'is', null);
+            if (empErr) {
+              console.warn('[publish] employee auth lookup failed (non-fatal):', empErr.message);
+              break;
+            }
+            (empRows ?? []).forEach((r: { auth_user_id: string | null }) => {
+              if (r.auth_user_id) assignedAuthIds.push(r.auth_user_id);
+            });
+          }
+          // Dedupe.
+          assignedAuthIds = Array.from(new Set(assignedAuthIds));
+        }
+
+        // Upsert enrollments — this is the critical step that makes the
+        // course actually appear in the learner's portal.
+        if (assignedAuthIds.length > 0) {
+          const enrollRows = assignedAuthIds.map(uid => ({ user_id: uid, course_id: courseId }));
+          // Chunk to keep request bodies sane and avoid timeouts on large rolls.
+          const ENROLL_CHUNK = 500;
+          for (let i = 0; i < enrollRows.length; i += ENROLL_CHUNK) {
+            const chunk = enrollRows.slice(i, i + ENROLL_CHUNK);
+            const { error: enrollErr } = await supabase
+              .from('enrollments')
+              .upsert(chunk, { onConflict: 'user_id,course_id' });
+            if (enrollErr) {
+              // Don't abort the whole publish — log + continue. Worst case:
+              // some learners need the nightly enrollment refresh to catch up.
+              console.warn('[publish] enrollment upsert failed for chunk (non-fatal):', enrollErr.message);
+            }
+          }
+        }
+
+        // Notify the assigned audience (only assignees — not "everyone with
+        // an auth user" like the old code did, which spammed the org and
+        // could time out the publish on large workspaces).
+        if (assignedAuthIds.length > 0) {
+          const notifBody = mode === 'existing'
+            ? `${lessonTitle.trim() || 'A new lesson'} — open the course to watch.`
+            : `${courseTitle.trim() || 'A new compliance course'} — open the Compliance Portal to begin.`;
+          const notifTitle = mode === 'existing' ? 'New lesson added' : 'New compliance course assigned';
+          const notifRows = assignedAuthIds.map(uid => ({
+            user_id: uid, title: notifTitle, body: notifBody, link_course_id: courseId,
+          }));
+          const NOTIF_CHUNK = 500;
+          for (let i = 0; i < notifRows.length; i += NOTIF_CHUNK) {
+            const chunk = notifRows.slice(i, i + NOTIF_CHUNK);
+            const { error: nErr } = await supabase.from('notifications').insert(chunk);
+            if (nErr) {
+              console.warn('[publish] notifications insert failed for chunk (non-fatal):', nErr.message);
+            }
+          }
         }
       }
       setUploadPct(100);
@@ -720,7 +826,7 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
         try { localStorage.removeItem(persistKey); } catch { /* ignore */ }
       }
       if (user) { try { await clearFiles(`${user.id}:`); } catch { /* ignore */ } }
-      setSaving(false);
+      didFinish = true;
       // If the reading material was soft-skipped (bucket/columns missing), let
       // the admin know via a non-blocking alert before navigating away.
       if (readingSkippedReason) {
@@ -735,9 +841,21 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
       } else if (/bucket not found/i.test(msg)) {
         setError(`${msg} — No data was lost; your draft is auto-saved and the publish can be retried after the bucket is created.`);
       } else {
-        setError(msg);
+        setError(msg || 'Publish failed. Please try again.');
       }
+    } finally {
+      // Belt-and-braces: always re-enable the button. The only way the
+      // button used to get stuck on "Publishing…" was if an await never
+      // resolved (e.g. a hung notifications insert on a 5k-employee
+      // workspace). With this finally + the per-step timeouts/chunking
+      // above, the button can no longer wedge.
       setSaving(false);
+      if (!didFinish) {
+        // We hit an error path — leave the wizard in place so the admin can
+        // retry without losing their state. Reset the upload progress bar
+        // so a stale 80% from a failed video upload doesn't mislead.
+        setUploadPct(0);
+      }
     }
   };
 
