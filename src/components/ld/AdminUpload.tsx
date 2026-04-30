@@ -468,11 +468,18 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
 
   const publish = async () => {
     setSaving(true); setError(null);
-    // Hard guard against the button getting stuck on "Publishing…" — every
-    // success/error path is covered by setSaving(false) already, but the
-    // finally block is the belt-and-braces for any path we missed (or for
-    // an unexpected throw inside one of the optional sub-steps).
+    // Hard guard against the button getting stuck on "Publishing…":
+    //   1. The whole flow is wrapped in try/finally — setSaving(false) ALWAYS runs.
+    //   2. A global watchdog timer (5 min) flips saving off no matter what,
+    //      even if some Supabase await never resolves at all (network drop,
+    //      hung websocket, etc.). Last-resort safety net so the button can
+    //      never wedge.
     let didFinish = false;
+    const watchdog = setTimeout(() => {
+      console.warn('[publish] watchdog tripped — forcing button out of saving state');
+      setSaving(false);
+      setError('Publish is taking longer than expected. The course may have been created — please refresh the page to check before retrying.');
+    }, 5 * 60 * 1000);
     try {
       if (!videoFile) throw new Error('Please upload a video file (mandatory).');
       let courseId = existingCourseId;
@@ -684,20 +691,8 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
           if (csvRows.length > 0) {
             const { error: eCsv } = await supabase.from('course_assignments').insert(csvRows);
             if (eCsv) throw eCsv;
-
-            // In-app notification for each newly-assigned CSV learner that
-            // has an auth user (so they get a real notification on login).
-            const csvNotifs = csvMatched
-              .filter(m => !alreadySet.has(m.id) && m.auth_user_id)
-              .map(m => ({
-                user_id: m.auth_user_id!,
-                title: 'New compliance course assigned',
-                body: `${courseTitle.trim() || 'A new compliance course'} — open the Compliance Portal to begin.`,
-                link_course_id: courseId,
-              }));
-            if (csvNotifs.length > 0) {
-              await supabase.from('notifications').insert(csvNotifs);
-            }
+            // Notifications intentionally NOT sent — admin asked for no
+            // notification spam on publish.
           }
         }
 
@@ -799,26 +794,10 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
           }
         }
 
-        // Notify the assigned audience (only assignees — not "everyone with
-        // an auth user" like the old code did, which spammed the org and
-        // could time out the publish on large workspaces).
-        if (assignedAuthIds.length > 0) {
-          const notifBody = mode === 'existing'
-            ? `${lessonTitle.trim() || 'A new lesson'} — open the course to watch.`
-            : `${courseTitle.trim() || 'A new compliance course'} — open the Compliance Portal to begin.`;
-          const notifTitle = mode === 'existing' ? 'New lesson added' : 'New compliance course assigned';
-          const notifRows = assignedAuthIds.map(uid => ({
-            user_id: uid, title: notifTitle, body: notifBody, link_course_id: courseId,
-          }));
-          const NOTIF_CHUNK = 500;
-          for (let i = 0; i < notifRows.length; i += NOTIF_CHUNK) {
-            const chunk = notifRows.slice(i, i + NOTIF_CHUNK);
-            const { error: nErr } = await supabase.from('notifications').insert(chunk);
-            if (nErr) {
-              console.warn('[publish] notifications insert failed for chunk (non-fatal):', nErr.message);
-            }
-          }
-        }
+        // Notifications intentionally NOT sent — admin asked for a clean
+        // publish that doesn't spam every assignee. The course will appear
+        // in their portal automatically thanks to the enrollment upsert
+        // above; they'll see it the next time they open the app.
       }
       setUploadPct(100);
       // Wizard finished — wipe the persisted draft so the next visit starts fresh.
@@ -844,11 +823,14 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
         setError(msg || 'Publish failed. Please try again.');
       }
     } finally {
-      // Belt-and-braces: always re-enable the button. The only way the
-      // button used to get stuck on "Publishing…" was if an await never
-      // resolved (e.g. a hung notifications insert on a 5k-employee
-      // workspace). With this finally + the per-step timeouts/chunking
-      // above, the button can no longer wedge.
+      // Belt-and-braces: always re-enable the button + cancel the watchdog.
+      // The button can no longer get stuck because:
+      //   - try/catch/finally guarantees we hit setSaving(false)
+      //   - setTimeout watchdog fires after 5min if an await truly hangs
+      //   - All notification inserts (the previous big offender) have been
+      //     removed entirely so the publish path is now: storage upload →
+      //     row inserts → enrollment upserts. No giant fan-out anywhere.
+      clearTimeout(watchdog);
       setSaving(false);
       if (!didFinish) {
         // We hit an error path — leave the wizard in place so the admin can
