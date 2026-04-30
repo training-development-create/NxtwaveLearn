@@ -16,6 +16,123 @@ import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "./auth";
 import { Btn, Card } from "./ui";
+import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+
+// Zoho-style signature stamp.
+// Downloads the template PDF, draws a signature block (typed name in a script
+// font + signing date + audit-trail strip) on the LAST page, uploads the
+// stamped copy back to the `agreements` bucket under a per-user path, and
+// returns the new path. If anything fails we return null and the caller falls
+// back to recording the signature without a stamped copy (so the user is
+// never blocked from completing the course).
+async function buildAndUploadStampedPdf(opts: {
+  templatePath: string;
+  courseId: string;
+  userId: string;
+  fullName: string;
+  signedAt: Date;
+}): Promise<string | null> {
+  try {
+    // 1. Download the original template bytes via a short-lived signed URL.
+    const { data: signed, error: urlErr } = await supabase.storage
+      .from('agreements').createSignedUrl(opts.templatePath, 60 * 5);
+    if (urlErr || !signed?.signedUrl) {
+      console.warn('[AgreementSign] could not sign template URL for stamping:', urlErr?.message);
+      return null;
+    }
+    const resp = await fetch(signed.signedUrl);
+    if (!resp.ok) {
+      console.warn('[AgreementSign] template fetch failed:', resp.status);
+      return null;
+    }
+    const bytes = new Uint8Array(await resp.arrayBuffer());
+
+    // 2. Stamp last page.
+    const pdf = await PDFDocument.load(bytes, { ignoreEncryption: true });
+    const pages = pdf.getPages();
+    if (pages.length === 0) return null;
+    const last = pages[pages.length - 1];
+    const { width, height } = last.getSize();
+
+    const helv = await pdf.embedFont(StandardFonts.Helvetica);
+    const helvBold = await pdf.embedFont(StandardFonts.HelveticaBold);
+    const oblique = await pdf.embedFont(StandardFonts.HelveticaOblique);
+
+    const dateStr = opts.signedAt.toLocaleDateString(undefined, {
+      year: 'numeric', month: 'short', day: '2-digit',
+    });
+    const timeStr = opts.signedAt.toLocaleTimeString(undefined, {
+      hour: '2-digit', minute: '2-digit', timeZoneName: 'short',
+    });
+
+    // Box dimensions (drawn near the bottom of the page).
+    const boxW = Math.min(width - 60, 380);
+    const boxH = 110;
+    const boxX = 30;
+    const boxY = 30;
+
+    // Background card (light) + accent border on top.
+    last.drawRectangle({
+      x: boxX, y: boxY, width: boxW, height: boxH,
+      color: rgb(0.973, 0.984, 1), // #F8FBFF
+      borderColor: rgb(0.0, 0.447, 1.0), // #0072FF accent
+      borderWidth: 1,
+    });
+    last.drawRectangle({
+      x: boxX, y: boxY + boxH - 4, width: boxW, height: 4,
+      color: rgb(0.0, 0.447, 1.0),
+    });
+
+    last.drawText('SIGNED ELECTRONICALLY', {
+      x: boxX + 12, y: boxY + boxH - 22, size: 8,
+      font: helvBold, color: rgb(0.36, 0.42, 0.49),
+    });
+
+    // Signed name in a script-ish style (HelveticaOblique is the closest in
+    // the standard 14 — large + italic reads as "signature").
+    last.drawText(opts.fullName, {
+      x: boxX + 12, y: boxY + boxH - 50, size: 22,
+      font: oblique, color: rgb(0.04, 0.12, 0.24),
+    });
+
+    last.drawLine({
+      start: { x: boxX + 12, y: boxY + boxH - 56 },
+      end: { x: boxX + boxW - 12, y: boxY + boxH - 56 },
+      thickness: 0.6,
+      color: rgb(0.78, 0.84, 0.92),
+    });
+
+    last.drawText(`Signed by: ${opts.fullName}`, {
+      x: boxX + 12, y: boxY + 32, size: 9,
+      font: helvBold, color: rgb(0.04, 0.12, 0.24),
+    });
+    last.drawText(`Date:       ${dateStr} · ${timeStr}`, {
+      x: boxX + 12, y: boxY + 18, size: 9,
+      font: helv, color: rgb(0.36, 0.42, 0.49),
+    });
+    last.drawText(`Signature ID: ${opts.userId.slice(0, 8)}…${opts.userId.slice(-4)}`, {
+      x: boxX + 12, y: boxY + 6, size: 8,
+      font: helv, color: rgb(0.55, 0.61, 0.7),
+    });
+
+    const stampedBytes = await pdf.save();
+
+    // 3. Upload the stamped copy.
+    const stampedPath = `${opts.courseId}/signed/${opts.userId}-${opts.signedAt.getTime()}.pdf`;
+    const blob = new Blob([stampedBytes], { type: 'application/pdf' });
+    const { error: upErr } = await supabase.storage
+      .from('agreements')
+      .upload(stampedPath, blob, { contentType: 'application/pdf', upsert: true });
+    if (upErr) {
+      console.warn('[AgreementSign] stamped upload failed:', upErr.message);
+      return null;
+    }
+    return stampedPath;
+  } catch (e) {
+    console.warn('[AgreementSign] stamping failed (non-fatal):', e);
+    return null;
+  }
+}
 
 type Props = {
   courseId: string;
@@ -88,10 +205,23 @@ export function AgreementSign({ courseId, courseTitle, agreementPdfPath, fullNam
     if (!user) return;
     setBusy(true); setErr(null);
     try {
+      const signedAt = new Date();
+      // Try to stamp the signature onto a per-user copy of the PDF and store
+      // that copy. If stamping fails (network blip, missing bucket perms,
+      // PDF too unusual to parse), we fall back to recording the signature
+      // pointing at the original template — the audit trail is still intact.
+      const stampedPath = await buildAndUploadStampedPdf({
+        templatePath: agreementPdfPath,
+        courseId,
+        userId: user.id,
+        fullName: typedName.trim(),
+        signedAt,
+      });
+      const pathForRow = stampedPath || agreementPdfPath;
       const { error } = await supabase.from('agreement_signatures').insert({
         user_id: user.id,
         course_id: courseId,
-        agreement_pdf_path: agreementPdfPath,
+        agreement_pdf_path: pathForRow,
         signed_full_name: typedName.trim(),
         signed_text: 'I have read and agree',
         user_agent: typeof navigator !== 'undefined' ? navigator.userAgent : null,

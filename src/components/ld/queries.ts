@@ -7,11 +7,35 @@ type CourseRow = {
   id: string; title: string; tag: string; blurb: string; instructor: string;
   hue: string; emoji: string; duration_label: string; due_in: string | null;
   agreement_required?: boolean | null;
+  // Optional new fields. May not exist in older Supabase projects — readers
+  // tolerate undefined.
+  due_in_days?: number | null;
+  published_at?: string | null;
 };
+
+// Computes the human "due in X days / overdue" label from the per-course
+// due_in_days + published_at. Falls back to the legacy free-text due_in
+// column if the new fields aren't set.
+function computeDueLabel(r: CourseRow): string | null {
+  if (r.due_in_days && r.published_at) {
+    const publishedMs = Date.parse(r.published_at);
+    if (!isNaN(publishedMs)) {
+      const dueMs = publishedMs + r.due_in_days * 24 * 60 * 60 * 1000;
+      const remainingMs = dueMs - Date.now();
+      const days = Math.ceil(remainingMs / (24 * 60 * 60 * 1000));
+      if (days < 0) return `Overdue by ${Math.abs(days)}d`;
+      if (days === 0) return 'Due today';
+      if (days === 1) return 'Due tomorrow';
+      return `Due in ${days}d`;
+    }
+  }
+  return r.due_in ?? null;
+}
 
 const toCourse = (r: CourseRow): Course => ({
   id: r.id, title: r.title, tag: r.tag, blurb: r.blurb, instructor: r.instructor,
-  hue: r.hue, emoji: r.emoji, duration_label: r.duration_label, due_in: r.due_in,
+  hue: r.hue, emoji: r.emoji, duration_label: r.duration_label,
+  due_in: computeDueLabel(r),
 });
 
 function lessonProgressRatio(durationSeconds: number, watchedSeconds: number, completed: boolean): number {
@@ -83,7 +107,19 @@ export function useUserCourses(userId: string | null) {
         const p = progressByLesson.get(l.id);
         return sum + lessonProgressRatio(l.duration, p?.watched_seconds || 0, !!p?.completed);
       }, 0);
-      const progressPct = total ? Math.round((weighted / total) * 100) : 0;
+      const rawPct = total ? Math.round((weighted / total) * 100) : 0;
+      // Strict 3-state course completion gate. A course is only "100%"
+      // when every lesson is completed AND (when required) the agreement
+      // is signed. If the agreement is still missing we cap progress at
+      // 99% so the user portal status stays "In progress" — never flips
+      // to "Completed" prematurely. This keeps the user-portal status,
+      // the manager dashboard, and the admin analytics in lockstep.
+      const agreementRequired = !!c.agreement_required;
+      const agreementSigned = signedCourseIds.has(c.id);
+      const agreementOk = !agreementRequired || agreementSigned;
+      const allLessonsDone = total > 0 && done === total;
+      const fullyComplete = allLessonsDone && agreementOk;
+      const progressPct = fullyComplete ? 100 : Math.min(99, rawPct);
       return {
         ...toCourse(c),
         lessons_total: total,
@@ -91,8 +127,8 @@ export function useUserCourses(userId: string | null) {
         progress: progressPct,
         enrolled: enrolledIds.has(c.id),
         started,
-        agreement_required: !!c.agreement_required,
-        agreement_signed: signedCourseIds.has(c.id),
+        agreement_required: agreementRequired,
+        agreement_signed: agreementSigned,
       };
     });
     setItems(out);

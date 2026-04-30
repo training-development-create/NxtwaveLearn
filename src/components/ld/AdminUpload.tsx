@@ -34,6 +34,10 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
   const [hue, setHue] = useState(HUES[0]);
   const [emoji, setEmoji] = useState(EMOJIS[0]);
   const [blurb, setBlurb] = useState('');
+  // Number of days the learner has to finish this course after publish.
+  // Persisted on courses.due_in_days; the user portal reads this to compute
+  // the per-learner due date (published_at + due_in_days). Empty/0 = no due date.
+  const [dueInDays, setDueInDays] = useState<string>('');
 
   const [lessonTitle, setLessonTitle] = useState('');
   const [videoFile, setVideoFile] = useState<File | null>(null);
@@ -290,6 +294,7 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
       const s = JSON.parse(raw) as {
         step?: number; mode?: 'new'|'existing'; existingCourseId?: string;
         courseTitle?: string; tag?: string; hue?: string; emoji?: string; blurb?: string;
+        dueInDays?: string;
         lessonTitle?: string; videoDuration?: number;
         questions?: Q[]; active?: number;
         assignAll?: boolean; assignDeptIds?: string[]; assignSubDeptIds?: string[];
@@ -305,6 +310,7 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
       if (s.hue) setHue(s.hue);
       if (s.emoji) setEmoji(s.emoji);
       if (s.blurb) setBlurb(s.blurb);
+      if (s.dueInDays) setDueInDays(s.dueInDays);
       if (s.lessonTitle) setLessonTitle(s.lessonTitle);
       if (typeof s.videoDuration === 'number') setVideoDuration(s.videoDuration);
       if (Array.isArray(s.questions)) setQuestions(s.questions);
@@ -346,7 +352,7 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
     try {
       const snapshot = {
         step, mode, existingCourseId,
-        courseTitle, tag, hue, emoji, blurb,
+        courseTitle, tag, hue, emoji, blurb, dueInDays,
         lessonTitle, videoDuration,
         questions, active,
         assignAll, assignDeptIds, assignSubDeptIds, assignManagerIds, assignEmployeeIds,
@@ -362,7 +368,7 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
       // Ignore quota errors etc.
       console.warn('[AdminUpload] Could not persist wizard state:', e);
     }
-  }, [persistKey, step, mode, existingCourseId, courseTitle, tag, hue, emoji, blurb,
+  }, [persistKey, step, mode, existingCourseId, courseTitle, tag, hue, emoji, blurb, dueInDays,
       lessonTitle, videoDuration, questions, active,
       assignAll, assignDeptIds, assignSubDeptIds, assignManagerIds, assignEmployeeIds,
       csvMatched, videoFile, agreementFile, readingFile,
@@ -482,17 +488,53 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
     }, 5 * 60 * 1000);
     try {
       if (!videoFile) throw new Error('Please upload a video file (mandatory).');
+      // Parse the optional "days to complete" field into a positive int (or null).
+      const dueDaysParsed = dueInDays.trim() ? Math.max(1, Math.min(365, parseInt(dueInDays, 10) || 0)) : 0;
+      const dueDaysVal = dueDaysParsed > 0 ? dueDaysParsed : null;
+
       let courseId = existingCourseId;
       if (mode === 'new') {
         if (!courseTitle.trim()) throw new Error('Course title is required.');
-        const { data, error: e1 } = await supabase.from('courses').insert({
+        // Build the insert payload. due_in_days is included optimistically; if
+        // the column doesn't exist in the project yet, retry without it so the
+        // publish still succeeds.
+        const baseInsert = {
           title: courseTitle.trim(), tag, blurb, instructor: '', hue, emoji,
           duration_label: videoDuration ? `${Math.ceil(videoDuration/60)} min` : '',
           created_by: user?.id ?? null,
           published_at: new Date().toISOString(),
-        }).select('id').single();
-        if (e1) throw e1;
-        courseId = data.id;
+        } as Record<string, unknown>;
+        const insertWithDue = { ...baseInsert, due_in_days: dueDaysVal };
+        let inserted: { id: string } | null = null;
+        {
+          const first = await supabase.from('courses').insert(insertWithDue).select('id').single();
+          if (first.error) {
+            if (/due_in_days/i.test(first.error.message) || /column .* does not exist/i.test(first.error.message)) {
+              console.warn('[AdminUpload] courses.due_in_days column missing — inserting without it');
+              const retry = await supabase.from('courses').insert(baseInsert).select('id').single();
+              if (retry.error) throw retry.error;
+              inserted = retry.data as { id: string };
+            } else {
+              throw first.error;
+            }
+          } else {
+            inserted = first.data as { id: string };
+          }
+        }
+        courseId = inserted!.id;
+      } else if (mode === 'existing' && existingCourseId) {
+        // Re-publishing onto an existing course: stamp published_at if still
+        // unpublished, and persist any changes to due_in_days.
+        const updates: Record<string, unknown> = { published_at: new Date().toISOString() };
+        if (dueDaysVal !== null) updates.due_in_days = dueDaysVal;
+        const { error: upCErr } = await supabase.from('courses').update(updates).eq('id', existingCourseId);
+        if (upCErr && !/due_in_days|column .* does not exist/i.test(upCErr.message)) {
+          // Non-fatal: we don't want to fail the whole publish on a metadata update glitch.
+          console.warn('[AdminUpload] could not update existing course metadata:', upCErr.message);
+        } else if (upCErr) {
+          // Retry without the column that's missing.
+          await supabase.from('courses').update({ published_at: updates.published_at }).eq('id', existingCourseId);
+        }
       }
       if (!courseId) throw new Error('Pick or create a course.');
       if (!lessonTitle.trim()) throw new Error('Lesson title is required.');
@@ -847,7 +889,7 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
     if (persistKey) { try { localStorage.removeItem(persistKey); } catch { /* ignore */ } }
     if (user) { clearFiles(`${user.id}:`).catch(() => {}); }
     setStep(1); setMode('new'); setExistingCourseId('');
-    setCourseTitle(''); setTag('Mandatory'); setHue(HUES[0]); setEmoji(EMOJIS[0]); setBlurb('');
+    setCourseTitle(''); setTag('Mandatory'); setHue(HUES[0]); setEmoji(EMOJIS[0]); setBlurb(''); setDueInDays('');
     setLessonTitle(''); setVideoFile(null); setVideoDuration(0); setUploadPct(0);
     setAgreementFile(null); setReadingFile(null);
     setQuestions([]); setActive(0); setError(null); setParseError(null);
@@ -913,6 +955,22 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
                     <div><Label>Color</Label><div style={{display:'flex', gap:6}}>{HUES.map(h=><button key={h} onClick={()=>setHue(h)} style={{width:30, height:30, borderRadius:8, background:h, border: hue===h?'3px solid #002A4B':'2px solid #fff', cursor:'pointer'}}/>)}</div></div>
                     <div style={{gridColumn:'1 / -1'}}><Label>Emoji</Label><div style={{display:'flex', gap:6, flexWrap:'wrap'}}>{EMOJIS.map(e=><button key={e} onClick={()=>setEmoji(e)} style={{width:36, height:36, borderRadius:8, fontSize:18, background: emoji===e?'#F2F9FF':'#fff', border:`1.5px solid ${emoji===e?'#0072FF':'#EEF2F7'}`, cursor:'pointer'}}>{e}</button>)}</div></div>
                     <div style={{gridColumn:'1 / -1'}}><Label>Description</Label><textarea rows={3} value={blurb} onChange={e=>setBlurb(e.target.value)} style={{...inputStyle, width:'100%', resize:'vertical'}} placeholder="Short summary shown on the course card."/></div>
+                    <div style={{gridColumn:'1 / -1'}}>
+                      <Label>Days to complete <span style={{fontWeight:500, color:'#8A97A8'}}>(optional)</span></Label>
+                      <div style={{display:'flex', alignItems:'center', gap:10}}>
+                        <TInput
+                          type="number"
+                          min={1}
+                          max={365}
+                          step={1}
+                          value={dueInDays}
+                          onChange={e=>setDueInDays(e.target.value.replace(/[^0-9]/g,''))}
+                          placeholder="e.g. 14"
+                          style={{maxWidth:140}}
+                        />
+                        <span style={{fontSize:12, color:'#5B6A7D'}}>days from publish — sets the per-learner due date. Leave blank for no deadline.</span>
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>

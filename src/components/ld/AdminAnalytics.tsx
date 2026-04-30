@@ -303,7 +303,14 @@ export function AdminAnalytics() {
       const watchPct = totalRuntime ? Math.min(100, Math.round((watchSec / totalRuntime) * 100)) : 0;
       const completion = lessonIds.length ? Math.round((userProg.filter(p => p.completed).length / lessonIds.length) * 100) : 0;
       const score = userAtt.length ? Math.round(userAtt.reduce((s, a) => s + (a.total ? (a.score/a.total)*100 : 0), 0) / userAtt.length) : 0;
-      const status = completion >= 70 ? 'active' : completion >= 30 ? 'at-risk' : 'overdue';
+      // Strict gate: only "active" (i.e. completed) when EVERY lesson is done
+      // (which already requires a 100% quiz pass) AND, when required, the
+      // agreement is signed. Anything short of that is at-risk / overdue based
+      // on how far they've gotten. Keeping this in lockstep with the KPI gate
+      // and the EmployeeDetailModal so admins never see one screen claim
+      // "Completed" while another claims "In progress" for the same learner.
+      const fullyCompleted = isFullyCompleted(uid);
+      const status = fullyCompleted ? 'active' : completion >= 30 ? 'at-risk' : 'overdue';
       return {
         id: uid, name: u.full_name || u.email, email: u.email, empId: u.employee_id || '—',
         department: u.department, subDepartment: u.sub_department,
@@ -485,6 +492,151 @@ export function AdminAnalytics() {
 
   // Per-video drill-down
   const selectedLesson = courseLessons.find(l => l.id === vid);
+
+  // ----- Export helpers (CSV-only + CSV+stamped-PDFs ZIP) ------------------
+  // Both pull from `filtered` (so the active search/department/manager
+  // filters are honoured) and join in agreement signatures so the sheet
+  // marks exactly who signed and where the stamped PDF lives in storage.
+  const [exporting, setExporting] = useState<null | 'csv' | 'zip'>(null);
+
+  const buildExportRows = async () => {
+    const courseRow = courses.find(c => c.id === course);
+    // Pull all signatures for this course in one round-trip; map by user_id
+    // so we can stamp Yes/No + stamped-pdf-path on every learner row.
+    const { data: sigs } = await supabase
+      .from('agreement_signatures')
+      .select('user_id, signed_at, signed_full_name, agreement_pdf_path')
+      .eq('course_id', course)
+      .range(0, 99999);
+    type Sig = { user_id: string; signed_at: string; signed_full_name: string | null; agreement_pdf_path: string | null };
+    const sigByUser = new Map<string, Sig>(((sigs || []) as Sig[]).map(s => [s.user_id, s]));
+    const rows = filtered.map(r => {
+      const sig = sigByUser.get(r.id);
+      const statusLabel = r.status === 'active' ? 'Completed' : r.status === 'at-risk' ? 'In progress' : r.watchSec > 0 ? 'In progress' : 'Not started';
+      return {
+        learner: r,
+        sig,
+        statusLabel,
+      };
+    });
+    return { rows, courseRow };
+  };
+
+  const csvEscape = (v: unknown): string => {
+    const s = v == null ? '' : String(v);
+    if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+    return s;
+  };
+
+  const buildCsvBlob = (rows: { learner: LearnerRow; sig?: { signed_at: string; signed_full_name: string | null; agreement_pdf_path: string | null }; statusLabel: string }[], courseTitle: string): Blob => {
+    const header = [
+      'Course','Employee Name','Employee Email','Employee ID','Department','Sub-Department',
+      'Manager Name','Manager Email','Manager Contact',
+      'Watched Time','Watched %','Lessons Completion %','Assessment %','Attempts',
+      'Status','Agreement Signed','Signed By','Signed At',
+    ];
+    const lines: string[] = [header.map(csvEscape).join(',')];
+    rows.forEach(({ learner, sig, statusLabel }) => {
+      lines.push([
+        courseTitle,
+        learner.name,
+        learner.email,
+        learner.empId,
+        learner.department || '',
+        learner.subDepartment || '',
+        learner.managerName || '',
+        learner.managerEmail || '',
+        learner.managerContact || '',
+        fmt(learner.watchSec),
+        `${learner.watchPct}%`,
+        `${learner.completion}%`,
+        learner.score ? `${learner.score}%` : '',
+        learner.attempts,
+        statusLabel,
+        sig?.signed_at ? 'Yes' : 'No',
+        sig?.signed_full_name || '',
+        sig?.signed_at ? new Date(sig.signed_at).toLocaleString() : '',
+      ].map(csvEscape).join(','));
+    });
+    // BOM so Excel opens UTF-8 cleanly.
+    return new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+  };
+
+  const triggerDownload = (blob: Blob, filename: string) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  };
+
+  const safeFilenamePart = (s: string) =>
+    (s || 'export').replace(/[^a-z0-9._-]+/gi, '_').slice(0, 60);
+
+  const exportCsv = async () => {
+    if (!course) return;
+    setExporting('csv');
+    try {
+      const { rows, courseRow } = await buildExportRows();
+      const title = courseRow?.title || 'course';
+      const blob = buildCsvBlob(rows, title);
+      const fname = `${safeFilenamePart(title)}-leaderboard-${new Date().toISOString().slice(0,10)}.csv`;
+      triggerDownload(blob, fname);
+    } catch (e) {
+      console.error('[AdminAnalytics] CSV export failed:', e);
+      alert('Could not export the sheet. Please try again.');
+    } finally {
+      setExporting(null);
+    }
+  };
+
+  const exportZip = async () => {
+    if (!course) return;
+    setExporting('zip');
+    try {
+      const JSZip = (await import('jszip')).default;
+      const zip = new JSZip();
+      const { rows, courseRow } = await buildExportRows();
+      const title = courseRow?.title || 'course';
+      // 1. Add the CSV at the top level of the zip.
+      zip.file('leaderboard.csv', buildCsvBlob(rows, title));
+      // 2. Add every signed PDF (stamped if available) under signed-pdfs/.
+      const pdfFolder = zip.folder('signed-pdfs');
+      // Fetch in parallel-but-bounded chunks of 6 to stay friendly on bandwidth.
+      const targets = rows.filter(r => r.sig?.agreement_pdf_path);
+      const CHUNK = 6;
+      for (let i = 0; i < targets.length; i += CHUNK) {
+        const slice = targets.slice(i, i + CHUNK);
+        await Promise.all(slice.map(async ({ learner, sig }) => {
+          if (!sig?.agreement_pdf_path) return;
+          const { data: signed, error } = await supabase.storage
+            .from('agreements').createSignedUrl(sig.agreement_pdf_path, 60 * 5);
+          if (error || !signed?.signedUrl) {
+            console.warn('[AdminAnalytics] could not sign URL for', sig.agreement_pdf_path, error?.message);
+            return;
+          }
+          try {
+            const resp = await fetch(signed.signedUrl);
+            if (!resp.ok) return;
+            const buf = await resp.arrayBuffer();
+            const fileName = `${safeFilenamePart(learner.name || learner.email)}-${safeFilenamePart(learner.empId)}.pdf`;
+            pdfFolder!.file(fileName, buf);
+          } catch (e) {
+            console.warn('[AdminAnalytics] PDF fetch failed:', e);
+          }
+        }));
+      }
+      const zipBlob = await zip.generateAsync({ type: 'blob' });
+      const fname = `${safeFilenamePart(title)}-leaderboard-${new Date().toISOString().slice(0,10)}.zip`;
+      triggerDownload(zipBlob, fname);
+    } catch (e) {
+      console.error('[AdminAnalytics] ZIP export failed:', e);
+      alert('Could not build the ZIP archive. Please try again.');
+    } finally {
+      setExporting(null);
+    }
+  };
 
   return (
     <div style={{padding:'28px 36px 48px', animation:'fadeUp .3s'}}>
@@ -773,7 +925,25 @@ export function AdminAnalytics() {
             </div>
           </div>
           {selectedLesson && (
-            <div style={{marginLeft:'auto'}}>
+            <div style={{marginLeft:'auto', display:'flex', alignItems:'center', gap:8, flexWrap:'wrap'}}>
+              <Btn
+                size="sm"
+                variant="soft"
+                disabled={!course || exporting !== null}
+                onClick={exportCsv}
+                title="Export this leaderboard as a CSV with manager + signed-agreement details"
+              >
+                {exporting === 'csv' ? 'Exporting…' : '⬇ Export sheet'}
+              </Btn>
+              <Btn
+                size="sm"
+                variant="soft"
+                disabled={!course || exporting !== null}
+                onClick={exportZip}
+                title="Download a ZIP containing the CSV plus every learner's signed PDF"
+              >
+                {exporting === 'zip' ? 'Bundling…' : '🗂 Sheet + signed PDFs (ZIP)'}
+              </Btn>
               <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search learner…" style={{padding:'8px 12px', border:'1px solid #DDE4ED', borderRadius:8, fontSize:12, minWidth:220}}/>
             </div>
           )}
@@ -814,9 +984,12 @@ function EmployeeDetailModal({ user, onClose, focusCourseId }: { user: LearnerRo
   const [loading, setLoading] = useState(true);
   const [lastLoginAt, setLastLoginAt] = useState<string | null>(null);
 
-  // Open the original agreement PDF in a new tab via a short-lived signed URL.
-  // We always show the original (per-course) PDF — that's what the learner
-  // signed (signedPath is captured at sign time as an audit snapshot).
+  // Open the (stamped) signed PDF in a new tab via a short-lived signed URL.
+  // signedPath now points at the per-user STAMPED copy produced by
+  // AgreementSign — it carries the learner's typed signature + date burned
+  // onto the last page (Zoho-style). For legacy signatures recorded before
+  // stamping shipped, signedPath still points at the template, so the button
+  // remains useful as a "view what they agreed to" fallback.
   const viewSignedAgreement = async (path: string) => {
     const { data, error } = await supabase.storage.from('agreements').createSignedUrl(path, 60 * 5);
     if (error || !data?.signedUrl) {
@@ -1011,7 +1184,7 @@ function EmployeeDetailModal({ user, onClose, focusCourseId }: { user: LearnerRo
                       </div>
                       {(c.signedPath || c.agreementPath) && (
                         <Btn size="sm" variant="soft" onClick={() => viewSignedAgreement((c.signedPath || c.agreementPath) as string)}>
-                          View document
+                          {c.signedPath ? '📄 View signed PDF' : 'View document'}
                         </Btn>
                       )}
                     </>

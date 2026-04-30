@@ -310,12 +310,71 @@ function EditAssignmentModal({ course, onClose, onSaved }: { course: Course; onC
   };
 
   const removeAssignment = async (a: Assignment) => {
-    if (!confirm('Remove this scope from the course? Employees only covered by this scope will lose access.')) return;
+    if (!confirm('Remove this scope from the course?\n\nEmployees only covered by this scope will lose access AND have ALL their progress, quiz attempts, enrollments, and agreement signatures for this course permanently deleted. They will disappear from analytics and the user portal.')) return;
     setBusy(true); setErr(null);
-    const { error } = await supabase.from('course_assignments').delete().eq('id', a.id);
-    if (error) { setErr(error.message); setBusy(false); return; }
-    setAssignments(prev => prev.filter(x => x.id !== a.id));
-    setBusy(false);
+    try {
+      // 1. Snapshot the current resolved employee-id set (from the RPC).
+      const prevSet = new Set(resolvedAssignedSet);
+
+      // 2. Delete the scope row.
+      const { error: delErr } = await supabase.from('course_assignments').delete().eq('id', a.id);
+      if (delErr) throw delErr;
+
+      // 3. Re-resolve the assignment after deletion.
+      const { data: nextRpc, error: rpcErr } = await supabase.rpc('assigned_employees', { _course_id: course.id });
+      if (rpcErr) throw rpcErr;
+      const nextSet = new Set(((nextRpc || []) as { employee_id: string }[]).map(r => r.employee_id));
+
+      // 4. Diff: employee row IDs that were in scope before and aren't now.
+      const droppedEmpIds = [...prevSet].filter(id => !nextSet.has(id));
+
+      // 5. Cascade-delete their data for THIS course only.
+      if (droppedEmpIds.length > 0) {
+        // Map employee row IDs → auth_user_ids (only those who have logged in).
+        const { data: empRows, error: empErr } = await supabase
+          .from('employees')
+          .select('auth_user_id')
+          .in('id', droppedEmpIds)
+          .not('auth_user_id', 'is', null);
+        if (empErr) throw empErr;
+        const authIds = ((empRows || []) as { auth_user_id: string | null }[])
+          .map(r => r.auth_user_id)
+          .filter((v): v is string => !!v);
+
+        if (authIds.length > 0) {
+          // Lessons belonging to this course — needed for lesson-scoped deletes.
+          const { data: lessonRows, error: lessonsErr } = await supabase
+            .from('lessons').select('id').eq('course_id', course.id);
+          if (lessonsErr) throw lessonsErr;
+          const lIds = ((lessonRows || []) as { id: string }[]).map(r => r.id);
+
+          // Run cascade deletes in parallel.
+          const ops: Promise<{ error: { message: string } | null }>[] = [
+            supabase.from('enrollments').delete().eq('course_id', course.id).in('user_id', authIds) as unknown as Promise<{ error: { message: string } | null }>,
+            supabase.from('agreement_signatures').delete().eq('course_id', course.id).in('user_id', authIds) as unknown as Promise<{ error: { message: string } | null }>,
+          ];
+          if (lIds.length > 0) {
+            ops.push(supabase.from('lesson_progress').delete().in('lesson_id', lIds).in('user_id', authIds) as unknown as Promise<{ error: { message: string } | null }>);
+            ops.push(supabase.from('quiz_attempts').delete().in('lesson_id', lIds).in('user_id', authIds) as unknown as Promise<{ error: { message: string } | null }>);
+          }
+          const results = await Promise.all(ops);
+          for (const r of results) {
+            if (r.error) throw r.error;
+          }
+        }
+      }
+
+      // 6. Update local state with the new resolved set.
+      setAssignments(prev => prev.filter(x => x.id !== a.id));
+      setResolvedAssignedSet(nextSet);
+
+      // 7. Notify the rest of the app (analytics, user portal) so live views refresh.
+      window.dispatchEvent(new CustomEvent('course-assignments-changed', { detail: { courseId: course.id } }));
+    } catch (e) {
+      setErr((e as Error).message || 'Could not remove scope.');
+    } finally {
+      setBusy(false);
+    }
   };
 
   const labelFor = (a: Assignment): string => {
