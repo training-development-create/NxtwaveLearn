@@ -18,7 +18,15 @@ export function Dashboard({ onNav }: { onNav: Nav }) {
   const inProgressTotal = courses.filter(isInProgress).length;
 
   const openCourse = async (c: CourseWithProgress) => {
-    if (user && !c.enrolled) await ensureEnrollment(user.id, c.id);
+    // Strict access — only an existing enrollment (created by the admin
+    // publish flow) lets a learner open a course. No silent lazy-enroll.
+    if (user && !c.enrolled) {
+      const ok = await ensureEnrollment(user.id, c.id);
+      if (!ok) {
+        alert('You are not enrolled in this course. Please contact your admin if this is unexpected.');
+        return;
+      }
+    }
     onNav('player', { course: c.id });
     reload();
   };

@@ -32,7 +32,17 @@ export function Courses({ onNav, initialQuery }: { onNav: Nav; initialQuery?: st
   const completed = filtered.filter(c => c.progress === 100);
 
   const open = async (c: CourseWithProgress) => {
-    if (user && !c.enrolled) await ensureEnrollment(user.id, c.id);
+    // Strict access — never lazy-create an enrollment from the click handler.
+    // The admin's publish flow is the only path that enrolls a user. If the
+    // user somehow lands here without an enrollment row, surface that
+    // explicitly instead of silently granting access.
+    if (user && !c.enrolled) {
+      const ok = await ensureEnrollment(user.id, c.id);
+      if (!ok) {
+        alert('You are not enrolled in this course. Please contact your admin if this is unexpected.');
+        return;
+      }
+    }
     onNav('player', { course: c.id });
     reload();
   };

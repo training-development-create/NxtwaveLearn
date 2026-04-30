@@ -125,10 +125,36 @@ export function useCourseLessons(courseId: string | null | undefined, userId: st
   const [progress, setProgress] = useState<Record<string, LessonProgress>>({});
   const [attemptsByLesson, setAttemptsByLesson] = useState<Record<string, { passed: boolean; score: number; total: number }[]>>({});
   const [loading, setLoading] = useState(true);
+  // When true, the current user is not enrolled in this course AND has no
+  // assignment scope match. The Player should refuse to render the video.
+  const [accessDenied, setAccessDenied] = useState(false);
 
   const load = useCallback(async () => {
-    if (!courseId) { setLessons([]); setLoading(false); return; }
+    if (!courseId) { setLessons([]); setLoading(false); setAccessDenied(false); return; }
     setLoading(true);
+    setAccessDenied(false);
+    // Strict access gate — a learner can only load lesson data for a course
+    // they are enrolled in. We deliberately check this BEFORE fetching the
+    // lessons themselves so a user who manipulates the URL with a courseId
+    // they were never assigned cannot pull video lists or signed URLs.
+    // Admins (no userId in this hook because they don't watch as learners)
+    // bypass via the AdminAnalytics component which doesn't use this hook.
+    if (userId) {
+      const { data: enrolled } = await supabase
+        .from('enrollments')
+        .select('course_id')
+        .eq('user_id', userId)
+        .eq('course_id', courseId)
+        .maybeSingle();
+      if (!enrolled) {
+        setLessons([]);
+        setProgress({});
+        setAttemptsByLesson({});
+        setAccessDenied(true);
+        setLoading(false);
+        return;
+      }
+    }
     const { data: ls } = await supabase.from('lessons').select('*').eq('course_id', courseId).order('position', { ascending: true });
     const arr: Lesson[] = (ls || []).map((l: { id: string; course_id: string; title: string; duration_seconds: number; position: number; video_url: string | null; video_path: string | null; reading_material_path?: string | null; reading_material_name?: string | null }) => ({
       id: l.id, course_id: l.course_id, title: l.title, duration: l.duration_seconds, position: l.position, video_url: l.video_url, video_path: l.video_path,
@@ -172,7 +198,7 @@ export function useCourseLessons(courseId: string | null | undefined, userId: st
     return () => { if (timer) clearTimeout(timer); supabase.removeChannel(ch); };
   }, [courseId, userId, load]);
 
-  return { lessons, progress, attemptsByLesson, loading, reload: load };
+  return { lessons, progress, attemptsByLesson, loading, accessDenied, reload: load };
 }
 
 export function useMCQ(lessonId: string | null | undefined) {
@@ -191,8 +217,18 @@ export function useMCQ(lessonId: string | null | undefined) {
   return { questions, loading };
 }
 
-export async function ensureEnrollment(userId: string, courseId: string) {
-  await supabase.from('enrollments').upsert({ user_id: userId, course_id: courseId }, { onConflict: 'user_id,course_id' });
+// Strict enrollment guard. The old behaviour was a blind upsert — anyone with
+// a courseId could bookmark a Player URL and grant themselves access. Now we
+// only confirm an existing enrollment row (the admin's publish flow is the
+// sole writer for new enrollment rows). Returns whether the user is enrolled.
+export async function ensureEnrollment(userId: string, courseId: string): Promise<boolean> {
+  const { data } = await supabase
+    .from('enrollments')
+    .select('course_id')
+    .eq('user_id', userId)
+    .eq('course_id', courseId)
+    .maybeSingle();
+  return !!data;
 }
 
 // Cache the highest watched_seconds per lesson per user so we never persist

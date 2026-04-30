@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useMemo } from "react";
+import { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Btn, Card, Chip, ProgressBar, Avatar, EmptyState } from "./ui";
 import { fmt } from "./data";
@@ -117,6 +117,12 @@ export function AdminAnalytics() {
   const [profilesAll, setProfilesAll] = useState<ProfileMini[]>([]);
   const progArrRef = useRef<{ user_id: string; lesson_id: string; watched_seconds: number; completed: boolean }[]>([]);
   const attArrRef = useRef<{ user_id: string; lesson_id: string; score: number; total: number; passed: boolean }[]>([]);
+  // Tracks which (user_id) have signed THIS course's agreement. Used by the
+  // strict completion gate: a course only counts as "completed" when the
+  // learner has finished every lesson AND signed the agreement (if required).
+  const signedSetRef = useRef<Set<string>>(new Set());
+  // Whether the currently-selected course requires agreement signing.
+  const agreementRequiredRef = useRef<boolean>(false);
   // Bumped at the end of every loadStats() so memoized aggregates that read
   // progArrRef / attArrRef recompute. Refs alone don't trigger React re-renders,
   // which is why the manager leaderboard "completed" counts were going stale
@@ -187,12 +193,22 @@ export function AdminAnalytics() {
     // Fast path: course-scoped queries only. Employees list comes from the
     // cached ref (refreshed by a separate effect when employees/depts/etc.
     // change). This is what makes refreshes feel instant.
-    const [{ data: enrolls }, { data: prog }, { data: attempts }, { data: assignedRows }] = await Promise.all([
+    // We ALSO pull the course row + agreement signatures so the completion
+    // gate can require both quiz pass (already implicit in
+    // lesson_progress.completed) AND a signed agreement when the course
+    // demands one. Without this, the analytics dashboard shows an employee
+    // as "completed" the moment they finish every video, even if they have
+    // not yet signed the compliance document.
+    const [{ data: enrolls }, { data: prog }, { data: attempts }, { data: assignedRows }, { data: courseRow }, { data: sigs }] = await Promise.all([
       supabase.from('enrollments').select('user_id').eq('course_id', course).range(0, 9999),
       lessonIds.length ? supabase.from('lesson_progress').select('user_id, lesson_id, watched_seconds, completed').in('lesson_id', lessonIds).range(0, 99999) : Promise.resolve({ data: [] as { user_id: string; lesson_id: string; watched_seconds: number; completed: boolean }[] }),
       lessonIds.length ? supabase.from('quiz_attempts').select('user_id, lesson_id, score, total, passed').in('lesson_id', lessonIds).range(0, 99999) : Promise.resolve({ data: [] as { user_id: string; lesson_id: string; score: number; total: number; passed: boolean }[] }),
       supabase.rpc('assigned_employees', { _course_id: course }),
+      supabase.from('courses').select('agreement_required').eq('id', course).maybeSingle(),
+      supabase.from('agreement_signatures').select('user_id').eq('course_id', course).range(0, 99999),
     ]);
+    agreementRequiredRef.current = !!(courseRow as { agreement_required?: boolean | null } | null)?.agreement_required;
+    signedSetRef.current = new Set(((sigs || []) as { user_id: string }[]).map(s => s.user_id));
     const employeesAll = employeesAllRef.current;
 
     // Build a profile list keyed by employees.id (the org id) AND a separate
@@ -242,12 +258,21 @@ export function AdminAnalytics() {
 
     const totalWatchSec = progArr.reduce((s, p) => s + (p.watched_seconds || 0), 0);
     const denom = (totalRuntime || 1) * (enrolledIds.size || 1);
+    // Strict completion: every lesson done (which already requires a 100% quiz
+    // pass — see Assessment.tsx and queries.ts) AND, when the course requires
+    // it, a signed agreement on file. Anything short of both is "in progress".
+    const agreementRequiredForCourse = agreementRequiredRef.current;
+    const signedForCourse = signedSetRef.current;
+    const isFullyCompleted = (uid: string) =>
+      lessonIds.length > 0
+      && lessonIds.every(lid => progArr.some(p => p.user_id === uid && p.lesson_id === lid && p.completed))
+      && (!agreementRequiredForCourse || signedForCourse.has(uid));
     setKpi({
       enrolled: enrolledIds.size,
       totalWatchSec,
       watchPct: enrolledIds.size && totalRuntime ? Math.min(100, Math.round((totalWatchSec / denom) * 100)) : 0,
       completion: enrolledIds.size && lessonIds.length
-        ? Math.round((Array.from(enrolledIds).filter(uid => lessonIds.every(lid => progArr.some(p => p.user_id === uid && p.lesson_id === lid && p.completed))).length / enrolledIds.size) * 100)
+        ? Math.round((Array.from(enrolledIds).filter(uid => isFullyCompleted(uid)).length / enrolledIds.size) * 100)
         : 0,
       passRate: attArr.length ? Math.round((attArr.filter(a => a.passed).length / attArr.length) * 100) : 0,
     });
@@ -300,8 +325,19 @@ export function AdminAnalytics() {
 
   // Reactive Stats Rollups (Aggregated from allProfiles + filter state)
   const stats = useMemo(() => {
+    // Strict completion gate — same rule as KPIs and the team breakdown:
+    //   1. Every lesson in this course must be `completed=true` (which the
+    //      Player only sets when the learner has watched the full video AND
+    //      passed the quiz at 100%, per Assessment.tsx).
+    //   2. If the course requires a signed agreement, the learner must have
+    //      a row in agreement_signatures for this course.
+    // Any partial state ⇒ NOT counted toward department / manager "completed".
+    const agreementRequired = agreementRequiredRef.current;
+    const signedSet = signedSetRef.current;
     const isCourseComplete = (authId: string) =>
-      lessonIds.length > 0 && lessonIds.every(lid => progArrRef.current.some(p => p.user_id === authId && p.lesson_id === lid && p.completed));
+      lessonIds.length > 0
+      && lessonIds.every(lid => progArrRef.current.some(p => p.user_id === authId && p.lesson_id === lid && p.completed))
+      && (!agreementRequired || signedSet.has(authId));
 
     const dMap = new Map<string, { total: number; completed: number }>();
     const mMap = new Map<string, { managerEmail: string; managerName: string; total: number; completed: number }>();
@@ -593,15 +629,23 @@ export function AdminAnalytics() {
               ? Math.round(userAtt.reduce((s, a) => s + (a.total ? (a.score / a.total) * 100 : 0), 0) / userAtt.length)
               : (lr?.score ?? 0);
             const attempts = userAtt.length || (lr?.attempts ?? 0);
+            // Strict completion — same rule as the manager leaderboard:
+            // 100% lessons done AND, when required, agreement signed. We
+            // can't infer the assessment threshold from `completion` alone
+            // (the Player only flips `completed=true` after the 100% pass)
+            // so the lesson-completion check implicitly enforces it.
+            const agreementOkForUser = !agreementRequiredRef.current || signedSetRef.current.has(p.id);
+            const fullyCompleted = completion === 100 && agreementOkForUser;
 
             // Status priority:
             //   1. Never signed in → 'not-signed-in' (only when truly not logged in)
-            //   2. 100% complete → 'completed'
+            //   2. 100% lessons + agreement (if required) → 'completed'
             //   3. Some progress (watch or completion) → 'in-progress'
+            //      (this includes the "all videos done but agreement missing" case)
             //   4. Logged in but no progress → 'not-started'
             const status = !hasLoggedIn
               ? 'not-signed-in'
-              : completion === 100
+              : fullyCompleted
                 ? 'completed'
                 : (completion > 0 || watchSec > 0)
                   ? 'in-progress'
@@ -782,8 +826,10 @@ function EmployeeDetailModal({ user, onClose, focusCourseId }: { user: LearnerRo
     window.open(data.signedUrl, '_blank', 'noopener');
   };
 
-  useEffect(() => {
-    (async () => {
+  // Pulled out into a callable so the realtime subscription below can re-run
+  // it on every relevant change. Without this, the modal stayed stale while
+  // open — admins had to close and reopen to see a learner's latest progress.
+  const loadDetail = useCallback(async () => {
       setLoading(true);
       const [{ data: courses }, { data: lessons }, { data: enrolls }, { data: progress }, { data: attempts }, { data: prof }, { data: sigs }] = await Promise.all([
         supabase.from('courses').select('id, title, emoji, agreement_required, agreement_pdf_path').order('created_at', { ascending: true }),
@@ -829,8 +875,14 @@ function EmployeeDetailModal({ user, onClose, focusCourseId }: { user: LearnerRo
         const allScores = lessonRows.map(l => l.bestScore).filter(s => s > 0);
         const avgScore = allScores.length ? Math.round(allScores.reduce((s, x) => s + x, 0) / allScores.length) : 0;
         const sig = sigByCourse.get(c.id);
+        // Strict completion: every lesson done (which already requires a 100%
+        // assessment pass) AND, when the course requires it, a signed
+        // agreement. If the agreement is required but missing, the course
+        // stays "in progress" no matter how many videos are finished.
+        const allLessonsDone = ls.length > 0 && lessonsCompleted === ls.length;
+        const agreementOk = !c.agreement_required || !!sig?.signed_at;
         const status: CourseDetail['status'] =
-          ls.length > 0 && lessonsCompleted === ls.length ? 'completed'
+          allLessonsDone && agreementOk ? 'completed'
           : totalWatched > 0 ? 'in-progress' : 'not-started';
         return {
           id: c.id, title: c.title, emoji: c.emoji, enrolled: enrolledIds.has(c.id),
@@ -856,8 +908,34 @@ function EmployeeDetailModal({ user, onClose, focusCourseId }: { user: LearnerRo
       const visible = out.filter(c => enrolledIds.has(c.id) || activeCourseIds.has(c.id));
       setDetails(visible);
       setLoading(false);
-    })();
   }, [user.id, focusCourseId]);
+
+  useEffect(() => { loadDetail(); }, [loadDetail]);
+
+  // Live updates while the modal is open. Without this, finishing a video or
+  // signing the agreement on the learner's screen left the admin staring at
+  // stale data — they had to close the drawer and reopen to see the new
+  // status. Debounce so a flood of watched_seconds writes doesn't refetch
+  // on every save (the heavy-ish 7-table fetch above runs at most every 1.5s).
+  useEffect(() => {
+    if (!user.id) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const schedule = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => loadDetail(), 1500);
+    };
+    const ch = supabase
+      .channel(`employee-detail-${user.id}-${Math.random().toString(36).slice(2)}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'lesson_progress', filter: `user_id=eq.${user.id}` }, schedule)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'quiz_attempts', filter: `user_id=eq.${user.id}` }, schedule)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'enrollments', filter: `user_id=eq.${user.id}` }, schedule)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'agreement_signatures', filter: `user_id=eq.${user.id}` }, schedule)
+      .subscribe();
+    return () => {
+      if (timer) clearTimeout(timer);
+      supabase.removeChannel(ch);
+    };
+  }, [user.id, loadDetail]);
 
   const d = details[0];
   const courseCompletionPct = d?.lessonsTotal ? Math.round((d.lessonsCompleted / d.lessonsTotal) * 100) : 0;

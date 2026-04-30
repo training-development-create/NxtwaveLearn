@@ -17,7 +17,7 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
   const { user } = useAuth();
   const courseId = state.course;
   const [course, setCourse] = useState<{ id: string; title: string; instructor: string; emoji: string; duration_label: string; agreement_required: boolean; agreement_pdf_path: string | null } | null>(null);
-  const { lessons, progress, attemptsByLesson, loading, reload } = useCourseLessons(courseId, user?.id ?? null);
+  const { lessons, progress, attemptsByLesson, loading, accessDenied, reload } = useCourseLessons(courseId, user?.id ?? null);
   const [videoSrc, setVideoSrc] = useState<string | null>(null);
   const [hasSignedAgreement, setHasSignedAgreement] = useState(false);
   const [showComplianceModal, setShowComplianceModal] = useState(false);
@@ -349,6 +349,12 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
     return <div style={{padding:40}}><EmptyState icon="🎬" title="Pick a course" sub="Open a course from your dashboard to start watching." action={<Btn onClick={()=>onNav('courses')}>Browse courses</Btn>}/></div>;
   }
   if (loading || !course) return <div style={{padding:40, color:'#5B6A7D', fontSize:13}}>Loading…</div>;
+  // Strict access — user is not enrolled in this course (and is not in the
+  // assignment scope). Show a clear message and a way back instead of the
+  // bare-bones Player UI with no lessons.
+  if (accessDenied) {
+    return <div style={{padding:40}}><EmptyState icon="🔒" title="You don't have access to this course" sub="This course wasn't assigned to you. Please contact your admin if this is unexpected." action={<Btn onClick={()=>onNav('courses')}>Back to my courses</Btn>}/></div>;
+  }
   if (lessons.length === 0) {
     return <div style={{padding:40}}><EmptyState icon="📼" title="No videos yet" sub="This course doesn't have any lessons published yet." action={<Btn variant="ghost" onClick={()=>onNav('courses')}>Back to courses</Btn>}/></div>;
   }
@@ -653,21 +659,21 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
 // =============================================================================
 
 // Single-popup compliance acknowledgement shown the first time a learner opens a course.
-// Lists all 3 rules in one panel — Video Rule, Assessment Rule, and (optionally) Document Rule.
+// Lists all 3 steps in one panel — Video, Assessment, and (optionally) Document.
 function ComplianceWizardModal({ courseTitle, agreementRequired, onAcknowledge }: { courseTitle: string; agreementRequired: boolean; onAcknowledge: () => void }) {
   const steps: { tag: string; text: string }[] = [
-    { tag: 'Step 1 — Video Rule', text: 'You must watch the entire compliance training video without skipping or tab switching.' },
-    { tag: 'Step 2 — Assessment Rule', text: 'Compliance assessment requires 100% correct answers. If any answer is wrong, the assessment restarts.' },
+    { tag: 'Step 1 — Video', text: 'You must watch the entire compliance training video without skipping or tab switching.' },
+    { tag: 'Step 2 — Assessment', text: 'Compliance assessment requires 100% correct answers. If any answer is wrong, the assessment restarts.' },
   ];
   if (agreementRequired) {
-    steps.push({ tag: 'Step 3 — Document Rule', text: 'You must read the complete compliance document before signing.' });
+    steps.push({ tag: 'Step 3 — Document', text: 'You must read the complete compliance document before signing.' });
   }
 
   return (
     <div style={{position:'fixed', inset:0, background:'rgba(10,31,61,.6)', zIndex:2000, display:'grid', placeItems:'center', padding:24}}>
       <div style={{background:'#fff', borderRadius:14, maxWidth:560, width:'100%', overflow:'hidden', boxShadow:'0 20px 60px rgba(0,0,0,.3)'}}>
         <div style={{padding:'24px 28px 20px', background:'linear-gradient(135deg,#0A1F3D,#0072FF)', color:'#fff'}}>
-          <div style={{fontSize:11, fontWeight:700, letterSpacing:'.12em', color:'#9EC9F0', textTransform:'uppercase'}}>Compliance Rules</div>
+          <div style={{fontSize:11, fontWeight:700, letterSpacing:'.12em', color:'#9EC9F0', textTransform:'uppercase'}}>Compliance Steps</div>
           <div style={{fontSize:18, fontWeight:800, marginTop:6, letterSpacing:'-.01em'}}>Before you begin</div>
           <div style={{fontSize:12, color:'#C8DDF4', marginTop:6}}>{courseTitle}</div>
         </div>

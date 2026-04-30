@@ -348,34 +348,91 @@ Deno.serve(async (req) => {
   // STEP 6: Link manager_id FKs (by matching manager email → employees.id).
   // Runs after all employees are upserted so cross-references always resolve.
   // Also updates hierarchy if reporting manager changed since last sync.
+  //
+  // Robustness rules — without these the manager_id stays NULL for newly
+  // synced employees in several real-world cases:
+  //   1. Use the DB's `manager_email` as a fallback when this run's payload
+  //      doesn't carry direct_manager_email for an employee (e.g. partial
+  //      sync, or manager_email already correct from an older run).
+  //   2. ALSO consider the manager's `company_email_id` and the legacy
+  //      `manager_email` column when building the email→id index. Darwinbox
+  //      may report the manager via a different email field than the one
+  //      used for the manager's own employees.email.
+  //   3. Look up by lowercase to avoid case mismatches between the two
+  //      Darwinbox fields.
+  //   4. ALWAYS write the patch even when manager_id was already correct
+  //      so we don't drop legitimate updates because of stale state.
   // -----------------------------------------------------------------------
   const { data: allEmployees, error: allEmployeesErr } = await sb
     .from("employees")
-    .select("id, email")
+    .select("id, email, manager_id, manager_email, company_email_id")
     .eq("status", "active");
   if (allEmployeesErr) return jsonResponse(500, { error: `employees read for manager linking failed: ${allEmployeesErr.message}` });
 
-  const employeeIdByEmail = new Map(
-    (allEmployees ?? []).map((e) => [String(e.email).toLowerCase(), String(e.id)])
-  );
-  const managerEmailByEmployeeEmail = new Map(
-    upserts
-      .filter((u) => !!u.direct_manager_email)
-      .map((u) => [u.email.toLowerCase(), (u.direct_manager_email as string).toLowerCase()])
-  );
+  // Build a tolerant email → employees.id lookup. We index every known
+  // email alias for each employee (employees.email, company_email_id) so
+  // the manager-email lookup can resolve regardless of which alias the
+  // manager-side payload uses.
+  const employeeIdByEmail = new Map<string, string>();
+  for (const e of (allEmployees ?? [])) {
+    const id = String(e.id);
+    const primary = e.email ? String(e.email).toLowerCase().trim() : null;
+    if (primary) employeeIdByEmail.set(primary, id);
+    const company = (e as { company_email_id?: string | null }).company_email_id;
+    if (company) {
+      const v = String(company).toLowerCase().trim();
+      if (v && !employeeIdByEmail.has(v)) employeeIdByEmail.set(v, id);
+    }
+  }
+
+  // Manager email per employee — prefer this run's payload, then fall back
+  // to the value already stored on the employees row. This way a partial
+  // sync (or a sync where Darwinbox omits the manager email for someone
+  // because nothing changed) doesn't wipe the relationship.
+  const managerEmailByEmployeeEmail = new Map<string, string>();
+  for (const u of upserts) {
+    if (u.direct_manager_email) {
+      managerEmailByEmployeeEmail.set(u.email.toLowerCase(), u.direct_manager_email.toLowerCase());
+    }
+  }
+  for (const e of (allEmployees ?? [])) {
+    const employeeEmail = String(e.email ?? "").toLowerCase();
+    if (!employeeEmail || managerEmailByEmployeeEmail.has(employeeEmail)) continue;
+    const stored = (e as { manager_email?: string | null }).manager_email;
+    if (stored) managerEmailByEmployeeEmail.set(employeeEmail, String(stored).toLowerCase());
+  }
+
+  let unresolvedManagerCount = 0;
   const managerPatches = (allEmployees ?? [])
     .map((e) => {
       const employeeEmail = String(e.email).toLowerCase();
       const mgrEmail = managerEmailByEmployeeEmail.get(employeeEmail) ?? null;
       if (!mgrEmail) return null;
       const mgrId = employeeIdByEmail.get(mgrEmail);
-      if (!mgrId || mgrId === String(e.id)) return null;
-      return { email: employeeEmail, manager_id: mgrId };
+      if (!mgrId) {
+        // Manager's row hasn't been synced yet (or uses an email alias we
+        // don't index). Surface this in logs so it can be investigated
+        // rather than silently leaving manager_id NULL.
+        unresolvedManagerCount++;
+        return null;
+      }
+      // Don't allow self-managing rows.
+      if (mgrId === String(e.id)) return null;
+      // Skip rows where the link is already correct AND the cached
+      // manager_email already matches — we don't want to spam writes for
+      // unchanged data. But if either differs, write the patch.
+      const currentManagerId = (e as { manager_id?: string | null }).manager_id ?? null;
+      const currentManagerEmail = (e as { manager_email?: string | null }).manager_email ?? null;
+      if (currentManagerId === mgrId && (currentManagerEmail ?? "").toLowerCase() === mgrEmail) return null;
+      return { email: employeeEmail, manager_id: mgrId, manager_email: mgrEmail };
     })
-    .filter((x): x is { email: string; manager_id: string } => x !== null);
+    .filter((x): x is { email: string; manager_id: string; manager_email: string } => x !== null);
   for (const batch of chunks(managerPatches, 500)) {
     const { error } = await sb.from("employees").upsert(batch, { onConflict: "email" });
     if (error) return jsonResponse(500, { error: `manager linking failed: ${error.message}` });
+  }
+  if (unresolvedManagerCount > 0) {
+    console.warn(`[sync] ${unresolvedManagerCount} employees have a manager email that does not match any active employee.email or company_email_id`);
   }
 
   // -----------------------------------------------------------------------
@@ -473,6 +530,7 @@ Deno.serve(async (req) => {
     profiles_updated: profileRows.length,
     roles_synced: roleRows.length,
     manager_links: managerPatches.length,
+    manager_links_unresolved: unresolvedManagerCount,
     new_hires_enrolled: (newHires ?? []).length,
     extended_columns_written: !usedMinimalFallback,
   });
