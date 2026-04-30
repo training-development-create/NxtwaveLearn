@@ -3,6 +3,7 @@ import { Card, ProgressBar, Icon, EmptyState, Btn } from "./ui";
 import { useAuth } from "./auth";
 import type { Nav } from "./App";
 import type { CourseWithProgress } from "./data";
+import { fmtShortDate } from "./data";
 
 export function Dashboard({ onNav }: { onNav: Nav }) {
   const { user, profile } = useAuth();
@@ -126,6 +127,22 @@ function RequiredRow({ c, last, onClick }: { c: CourseWithProgress; last:boolean
       <div style={{flex:1, minWidth:0}}>
         <div style={{fontSize:14, fontWeight:700, color:'#0A1F3D'}}>{c.title}</div>
         <div style={{fontSize:12, color:'#5B6A7D', marginTop:2}}>{c.lessons_total} videos · {c.duration_label || '—'}{c.due_in ? ` · ${c.due_in}` : ''}</div>
+        {(c.published_at || c.due_at) && (() => {
+          // Render the absolute Published / Complete-by dates so the user sees
+          // exactly what admin analytics shows. We compute overdue/dueSoon from
+          // due_at directly so colours don't drift from the relative label.
+          const dueMs = c.due_at ? Date.parse(c.due_at) : null;
+          const days = dueMs ? Math.ceil((dueMs - Date.now()) / 86400000) : null;
+          const overdue = days !== null && days < 0;
+          const dueSoon = days !== null && days >= 0 && days <= 3;
+          const dueColor = overdue ? '#D92D20' : dueSoon ? '#9A6708' : '#5B6A7D';
+          return (
+            <div style={{display:'flex', flexWrap:'wrap', gap:'2px 14px', marginTop:4, fontSize:11, color:'#8A97A8'}}>
+              {c.published_at && <span>Published <strong style={{color:'#0A1F3D', fontWeight:600}}>{fmtShortDate(c.published_at)}</strong></span>}
+              {c.due_at && <span>Complete by <strong style={{color:dueColor, fontWeight:700}}>{fmtShortDate(c.due_at)}</strong></span>}
+            </div>
+          );
+        })()}
       </div>
       <div style={{width:170}}>
         {c.progress === 100 ? (

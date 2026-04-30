@@ -32,10 +32,22 @@ function computeDueLabel(r: CourseRow): string | null {
   return r.due_in ?? null;
 }
 
+// Absolute ISO due-date, computed from published_at + due_in_days. Surfaced
+// alongside the relative `due_in` label so the Player + admin analytics can
+// show "Due by 12 May 2026" while Dashboard cards keep the short label.
+function computeDueAt(r: CourseRow): string | null {
+  if (!r.due_in_days || !r.published_at) return null;
+  const publishedMs = Date.parse(r.published_at);
+  if (isNaN(publishedMs)) return null;
+  return new Date(publishedMs + r.due_in_days * 24 * 60 * 60 * 1000).toISOString();
+}
+
 const toCourse = (r: CourseRow): Course => ({
   id: r.id, title: r.title, tag: r.tag, blurb: r.blurb, instructor: r.instructor,
   hue: r.hue, emoji: r.emoji, duration_label: r.duration_label,
   due_in: computeDueLabel(r),
+  published_at: r.published_at ?? null,
+  due_at: computeDueAt(r),
 });
 
 function lessonProgressRatio(durationSeconds: number, watchedSeconds: number, completed: boolean): number {

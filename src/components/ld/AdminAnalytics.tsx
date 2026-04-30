@@ -3,7 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { Btn, Card, Chip, ProgressBar, Avatar, EmptyState } from "./ui";
 import { fmt } from "./data";
 
-type CourseRow = { id: string; title: string };
+type CourseRow = { id: string; title: string; published_at?: string | null; due_in_days?: number | null };
 type LessonRow = { id: string; title: string; course_id: string; duration_seconds: number };
 type LearnerRow = {
   id: string; name: string; email: string; empId: string;
@@ -141,15 +141,21 @@ export function AdminAnalytics() {
   // when the admin deletes/edits a course or video so the sidebar dropdowns
   // and the analytics scope refresh without a page reload.
   const loadCoursesAndLessons = async () => {
-    const [{ data: cs }, { data: ls }] = await Promise.all([
-      supabase.from('courses').select('id, title').order('created_at', { ascending: true }),
-      supabase.from('lessons').select('id, title, course_id, duration_seconds').order('position', { ascending: true }),
-    ]);
-    setCourses(cs || []);
+    // Try the wide select first (with published_at + due_in_days). Older
+    // Supabase projects without those columns just retry the narrow one.
+    let cs: CourseRow[] | null = null;
+    const wide = await supabase.from('courses').select('id, title, published_at, due_in_days').order('created_at', { ascending: true });
+    if (!wide.error) cs = (wide.data || []) as CourseRow[];
+    if (!cs) {
+      const narrow = await supabase.from('courses').select('id, title').order('created_at', { ascending: true });
+      cs = (narrow.data || []) as CourseRow[];
+    }
+    const { data: ls } = await supabase.from('lessons').select('id, title, course_id, duration_seconds').order('position', { ascending: true });
+    setCourses(cs);
     setLessons(ls || []);
-    if ((cs || []).length && !course) setCourse(cs![0].id);
+    if (cs.length && !course) setCourse(cs[0].id);
     // If the currently-selected course was deleted, fall back to the first one.
-    if (course && cs && !cs.some(c => c.id === course)) {
+    if (course && !cs.some(c => c.id === course)) {
       setCourse(cs[0]?.id ?? '');
     }
   };
@@ -414,10 +420,29 @@ export function AdminAnalytics() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'quiz_attempts' }, debouncedLoad)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'enrollments' }, debouncedLoad)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'course_assignments' }, debouncedLoad)
+      // Cascade-delete on Edit Assignment removes agreement_signatures rows
+      // too — without this subscription analytics shows the user as "Signed"
+      // until the next manual refresh.
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'agreement_signatures' }, debouncedLoad)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'lessons' }, debouncedRefreshAll)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'courses' }, debouncedRefreshAll)
       .subscribe();
-    return () => { if (timer) clearTimeout(timer); supabase.removeChannel(ch); };
+    // Window-event listener — fires the moment AdminModules cascade-deletes.
+    // Realtime can lag a few seconds; this gives admins instant feedback so
+    // a removed user disappears from the leaderboard the same tick.
+    const onAssignmentsChanged = (e: Event) => {
+      const detail = (e as CustomEvent<{ courseId?: string }>).detail;
+      if (!detail || !detail.courseId || detail.courseId === course) {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => loadStats(), 100);
+      }
+    };
+    window.addEventListener('course-assignments-changed', onAssignmentsChanged);
+    return () => {
+      if (timer) clearTimeout(timer);
+      supabase.removeChannel(ch);
+      window.removeEventListener('course-assignments-changed', onAssignmentsChanged);
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [course, lessons]);
 
@@ -688,6 +713,46 @@ export function AdminAnalytics() {
           {managerOptions.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
         </select>
       </div>
+
+      {/* Course timeline strip — Published-on + Complete-by, identical to
+          what learners see in the Player + Dashboard so admins read the
+          exact same dates in analytics. */}
+      {(() => {
+        const cr = courses.find(c => c.id === course);
+        if (!cr) return null;
+        const publishedAt = cr.published_at ?? null;
+        const dueDays = cr.due_in_days ?? null;
+        const dueAtMs = (publishedAt && dueDays) ? Date.parse(publishedAt) + dueDays * 86400000 : null;
+        const dueAtIso = dueAtMs ? new Date(dueAtMs).toISOString() : null;
+        const days = dueAtMs ? Math.ceil((dueAtMs - Date.now()) / 86400000) : null;
+        const overdue = days !== null && days < 0;
+        const dueSoon = days !== null && days >= 0 && days <= 3;
+        const dueColor = overdue ? '#D92D20' : dueSoon ? '#9A6708' : '#0A1F3D';
+        const fmtD = (iso: string | null): string => {
+          if (!iso) return '—';
+          const t = Date.parse(iso); if (isNaN(t)) return '—';
+          return new Date(t).toLocaleDateString(undefined, { day:'2-digit', month:'short', year:'numeric' });
+        };
+        return (
+          <div style={{display:'flex', flexWrap:'wrap', gap:12, marginBottom:20}}>
+            <div style={{padding:'10px 16px', background:'#fff', border:'1px solid #EEF2F7', borderRadius:10, display:'flex', alignItems:'center', gap:10}}>
+              <span style={{fontSize:11, fontWeight:700, color:'#8A97A8', letterSpacing:'.06em', textTransform:'uppercase'}}>Published</span>
+              <span style={{fontSize:13, fontWeight:700, color:'#0A1F3D'}}>{fmtD(publishedAt)}</span>
+              {!publishedAt && <span style={{fontSize:11, color:'#8A97A8'}}>(unpublished)</span>}
+            </div>
+            <div style={{padding:'10px 16px', background:'#fff', border:`1px solid ${overdue ? '#FECDCA' : dueSoon ? '#FCD79B' : '#EEF2F7'}`, borderRadius:10, display:'flex', alignItems:'center', gap:10}}>
+              <span style={{fontSize:11, fontWeight:700, color:'#8A97A8', letterSpacing:'.06em', textTransform:'uppercase'}}>Complete by</span>
+              <span style={{fontSize:13, fontWeight:700, color:dueColor}}>{fmtD(dueAtIso)}</span>
+              {days !== null && (
+                <span style={{fontSize:11, fontWeight:600, color:dueColor}}>
+                  ({overdue ? `${Math.abs(days)}d overdue` : days === 0 ? 'today' : `${days}d left`})
+                </span>
+              )}
+              {!dueDays && <span style={{fontSize:11, color:'#8A97A8'}}>(no deadline set)</span>}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Department completion + Manager leaderboard */}
       <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:16, marginBottom:20}}>

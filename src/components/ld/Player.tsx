@@ -3,7 +3,7 @@ import { useCourseLessons, saveLessonProgress, getVideoUrl, getReadingMaterialUr
 import { useAuth } from "./auth";
 import { supabase } from "@/integrations/supabase/client";
 import { Btn, Card, ProgressBar, Icon, EmptyState } from "./ui";
-import { fmt, UNLOCK_THRESHOLD } from "./data";
+import { fmt, fmtShortDate, UNLOCK_THRESHOLD } from "./data";
 import type { Nav, AppState } from "./App";
 
 const lessonRatio = (duration: number, watched: number, completed: boolean) => {
@@ -16,7 +16,7 @@ const lessonRatio = (duration: number, watched: number, completed: boolean) => {
 export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState; setState: (s: AppState) => void }) {
   const { user } = useAuth();
   const courseId = state.course;
-  const [course, setCourse] = useState<{ id: string; title: string; instructor: string; emoji: string; duration_label: string; agreement_required: boolean; agreement_pdf_path: string | null } | null>(null);
+  const [course, setCourse] = useState<{ id: string; title: string; instructor: string; emoji: string; duration_label: string; agreement_required: boolean; agreement_pdf_path: string | null; published_at: string | null; due_in_days: number | null } | null>(null);
   const { lessons, progress, attemptsByLesson, loading, accessDenied, reload } = useCourseLessons(courseId, user?.id ?? null);
   const [videoSrc, setVideoSrc] = useState<string | null>(null);
   const [hasSignedAgreement, setHasSignedAgreement] = useState(false);
@@ -26,8 +26,24 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
 
   useEffect(() => {
     if (!courseId) return;
-    supabase.from('courses').select('id, title, instructor, emoji, duration_label, agreement_required, agreement_pdf_path').eq('id', courseId).maybeSingle()
-      .then(({ data }) => setCourse(data));
+    // Tolerate older Supabase projects that don't yet have published_at /
+    // due_in_days columns — try the wide select first, fall back if it fails.
+    let cancelled = false;
+    (async () => {
+      const wide = await supabase
+        .from('courses')
+        .select('id, title, instructor, emoji, duration_label, agreement_required, agreement_pdf_path, published_at, due_in_days')
+        .eq('id', courseId).maybeSingle();
+      if (!wide.error && wide.data) { if (!cancelled) setCourse(wide.data as typeof course); return; }
+      const narrow = await supabase
+        .from('courses')
+        .select('id, title, instructor, emoji, duration_label, agreement_required, agreement_pdf_path')
+        .eq('id', courseId).maybeSingle();
+      if (cancelled) return;
+      const row = narrow.data ? { ...(narrow.data as Record<string, unknown>), published_at: null, due_in_days: null } as unknown as typeof course : null;
+      setCourse(row);
+    })();
+    return () => { cancelled = true; };
   }, [courseId]);
 
   // One-time compliance notice per (user, course). Stored in localStorage so
@@ -566,9 +582,47 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
       </div>
 
       <div style={{display:'flex', flexDirection:'column', gap:14}}>
-        {/* Quiz / Assessment CTA — top of the right rail so every learner
-            sees it immediately and understands the flow:
-              1. Watch  2. Assessment  3. Sign agreement (if required) */}
+        {/* Right-rail order (per product spec):
+              1. "In this course" — video list + duration on top
+              2. Step 2 — Assessment
+              3. Step 3 — Agreement (when required)
+              4. Course timeline — published / due dates */}
+        <Card pad={0}>
+          <div style={{padding:'16px 18px', borderBottom:'1px solid #EEF2F7'}}>
+            <div style={{fontSize:11, fontWeight:600, color:'#8A97A8', letterSpacing:'.06em', textTransform:'uppercase'}}>In this course</div>
+            <div style={{fontSize:14, fontWeight:700, color:'#0A1F3D', marginTop:4}}>{course.title}</div>
+            <div style={{marginTop:10}}><ProgressBar value={courseProgress} showLabel/></div>
+            <div style={{fontSize:11, color:'#5B6A7D', marginTop:6}}>{lessons.filter(l=>progress[l.id]?.completed).length} of {lessons.length} videos complete</div>
+          </div>
+          <div style={{maxHeight:360, overflowY:'auto'}}>
+            {lessons.map((l,i) => {
+              const active = l.id === activeId;
+              const p = progress[l.id];
+              const passedAttempts = (attemptsByLesson[l.id] || []).filter(a => a.passed);
+              const bestPass = passedAttempts.reduce((m, a) => Math.max(m, Math.round((a.score/a.total)*100)), 0);
+              const wpct = p ? Math.min(100, (p.watched_seconds / Math.max(1, l.duration)) * 100) : 0;
+              const locked = locks[i];
+              const done = !!p?.completed;
+              return (
+                <div key={l.id} onClick={()=>switchLesson(l.id)} style={{padding:'12px 16px', borderBottom:'1px solid #F7F9FC', cursor: locked?'not-allowed':'pointer', background: active?'#F2F9FF':'transparent', opacity: locked?.55:1, display:'flex', gap:12, alignItems:'flex-start'}}>
+                  <div style={{width:26, height:26, borderRadius:99, background: done?'#17A674':active?'#0072FF':'#EEF2F7', color: (done||active)?'#fff':'#5B6A7D', display:'grid', placeItems:'center', fontSize:11, fontWeight:700, flexShrink:0}}>
+                    {done ? '✓' : locked ? '🔒' : i+1}
+                  </div>
+                  <div style={{flex:1, minWidth:0}}>
+                    <div style={{fontSize:13, fontWeight: active?700:600, color: active?'#0A1F3D':'#3B4A5E'}}>{l.title}</div>
+                    <div style={{fontSize:11, color:'#8A97A8', marginTop:2, display:'flex', gap:8, alignItems:'center'}}>
+                      <span>{fmt(l.duration)}</span>
+                      {bestPass > 0 && <span style={{color:'#17A674', fontWeight:600}}>· Assessment {bestPass}%</span>}
+                    </div>
+                    {wpct>0 && wpct<100 && <div style={{marginTop:6}}><ProgressBar value={Math.round(wpct)} height={3}/></div>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+
+        {/* Step 2 — Assessment CTA */}
         <Card pad={16} style={{borderColor: unlocked ? '#CCEAFF' : '#EEF2F7', background: unlocked ? 'linear-gradient(180deg,#F2F9FF,#fff)' : '#fff'}}>
           <div style={{display:'flex', alignItems:'center', gap:10}}>
             <div style={{width:36, height:36, borderRadius:10, background: unlocked ? '#E6F4FF' : '#F7F9FC', color: unlocked ? '#0072FF' : '#8A97A8', display:'grid', placeItems:'center'}}>
@@ -625,43 +679,49 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
           );
         })()}
 
-        <Card pad={0}>
-          <div style={{padding:'16px 18px', borderBottom:'1px solid #EEF2F7'}}>
-            <div style={{fontSize:11, fontWeight:600, color:'#8A97A8', letterSpacing:'.06em', textTransform:'uppercase'}}>In this course</div>
-            <div style={{fontSize:14, fontWeight:700, color:'#0A1F3D', marginTop:4}}>{course.title}</div>
-            <div style={{marginTop:10}}><ProgressBar value={courseProgress} showLabel/></div>
-            <div style={{fontSize:11, color:'#5B6A7D', marginTop:6}}>{lessons.filter(l=>progress[l.id]?.completed).length} of {lessons.length} videos complete</div>
-          </div>
-          <div style={{maxHeight:420, overflowY:'auto'}}>
-            {lessons.map((l,i) => {
-              const active = l.id === activeId;
-              const p = progress[l.id];
-              const passedAttempts = (attemptsByLesson[l.id] || []).filter(a => a.passed);
-              const bestPass = passedAttempts.reduce((m, a) => Math.max(m, Math.round((a.score/a.total)*100)), 0);
-              const wpct = p ? Math.min(100, (p.watched_seconds / Math.max(1, l.duration)) * 100) : 0;
-              const locked = locks[i];
-              const done = !!p?.completed;
-              return (
-                <div key={l.id} onClick={()=>switchLesson(l.id)} style={{padding:'12px 16px', borderBottom:'1px solid #F7F9FC', cursor: locked?'not-allowed':'pointer', background: active?'#F2F9FF':'transparent', opacity: locked?.55:1, display:'flex', gap:12, alignItems:'flex-start'}}>
-                  <div style={{width:26, height:26, borderRadius:99, background: done?'#17A674':active?'#0072FF':'#EEF2F7', color: (done||active)?'#fff':'#5B6A7D', display:'grid', placeItems:'center', fontSize:11, fontWeight:700, flexShrink:0}}>
-                    {done ? '✓' : locked ? '🔒' : i+1}
-                  </div>
-                  <div style={{flex:1, minWidth:0}}>
-                    <div style={{fontSize:13, fontWeight: active?700:600, color: active?'#0A1F3D':'#3B4A5E'}}>{l.title}</div>
-                    <div style={{fontSize:11, color:'#8A97A8', marginTop:2, display:'flex', gap:8, alignItems:'center'}}>
-                      <span>{fmt(l.duration)}</span>
-                      {bestPass > 0 && <span style={{color:'#17A674', fontWeight:600}}>· Assessment {bestPass}%</span>}
-                    </div>
-                    {wpct>0 && wpct<100 && <div style={{marginTop:6}}><ProgressBar value={Math.round(wpct)} height={3}/></div>}
+        {/* Course timeline — published-on + complete-by. Both dates are
+            also rendered on the user portal home (Dashboard) and Admin
+            Analytics so learners and admins see identical numbers. */}
+        {(() => {
+          const publishedAt = course.published_at;
+          const dueDays = course.due_in_days;
+          const dueAtMs = (publishedAt && dueDays) ? Date.parse(publishedAt) + dueDays * 86400000 : null;
+          const dueAtIso = dueAtMs ? new Date(dueAtMs).toISOString() : null;
+          const remainingDays = dueAtMs ? Math.ceil((dueAtMs - Date.now()) / 86400000) : null;
+          const overdue = remainingDays !== null && remainingDays < 0;
+          const dueSoon = remainingDays !== null && remainingDays >= 0 && remainingDays <= 3;
+          const accent = overdue ? '#D92D20' : dueSoon ? '#9A6708' : '#0072FF';
+          const bg = overdue ? '#FEF3F2' : dueSoon ? '#FFF8EA' : '#F2F9FF';
+          const border = overdue ? '#FECDCA' : dueSoon ? '#FCD79B' : '#CCEAFF';
+          return (
+            <Card pad={16} style={{background:bg, borderColor:border}}>
+              <div style={{fontSize:11, fontWeight:700, color:accent, letterSpacing:'.08em', textTransform:'uppercase'}}>Course timeline</div>
+              <div style={{display:'flex', flexDirection:'column', gap:10, marginTop:10}}>
+                <div style={{display:'flex', justifyContent:'space-between', alignItems:'baseline', gap:8}}>
+                  <div style={{fontSize:11, color:'#5B6A7D'}}>Published on</div>
+                  <div style={{fontSize:13, fontWeight:700, color:'#0A1F3D'}}>{fmtShortDate(publishedAt)}</div>
+                </div>
+                <div style={{display:'flex', justifyContent:'space-between', alignItems:'baseline', gap:8}}>
+                  <div style={{fontSize:11, color:'#5B6A7D'}}>Complete by</div>
+                  <div style={{fontSize:13, fontWeight:700, color:accent}}>
+                    {fmtShortDate(dueAtIso)}
+                    {remainingDays !== null && (
+                      <span style={{marginLeft:6, fontSize:11, fontWeight:600}}>
+                        ({overdue ? `${Math.abs(remainingDays)}d overdue` : remainingDays === 0 ? 'today' : `${remainingDays}d left`})
+                      </span>
+                    )}
                   </div>
                 </div>
-              );
-            })}
-            {/* Agreement entry now lives in its own card above the lesson
-                list (top of the right rail, just under the quiz CTA), so the
-                three steps — Watch → Assess → Sign — read top-to-bottom. */}
-          </div>
-        </Card>
+                {!publishedAt && (
+                  <div style={{fontSize:11, color:'#8A97A8'}}>Awaiting publish — admin will set the deadline.</div>
+                )}
+                {publishedAt && !dueDays && (
+                  <div style={{fontSize:11, color:'#8A97A8'}}>No deadline — admin hasn't set a due date.</div>
+                )}
+              </div>
+            </Card>
+          );
+        })()}
       </div>
     </div>
   );
