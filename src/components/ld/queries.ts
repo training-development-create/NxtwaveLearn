@@ -42,14 +42,22 @@ export function useUserCourses(userId: string | null) {
   const load = useCallback(async () => {
     if (!userId) { setItems([]); setLoading(false); return; }
     setLoading(true);
-    const [{ data: courses }, { data: lessons }, { data: progress }, { data: enrolls }, { data: signedSigs }] = await Promise.all([
+    // Two-phase fetch: first load courses + this user's enrollments,
+    // THEN load only the lessons that belong to their enrolled courses.
+    // At scale (50+ courses × 20 lessons globally) this avoids dragging
+    // the entire lessons table to every user on every page load.
+    const [{ data: courses }, { data: enrolls }, { data: progress }, { data: signedSigs }] = await Promise.all([
       supabase.from('courses').select('*').order('created_at', { ascending: true }),
-      supabase.from('lessons').select('id, course_id, duration_seconds'),
-      supabase.from('lesson_progress').select('lesson_id, completed, watched_seconds').eq('user_id', userId),
       supabase.from('enrollments').select('course_id').eq('user_id', userId),
+      supabase.from('lesson_progress').select('lesson_id, completed, watched_seconds').eq('user_id', userId),
       // Compliance: which courses has this user signed the agreement for?
       supabase.from('agreement_signatures').select('course_id').eq('user_id', userId),
     ]);
+    const enrolledCourseIds = (enrolls || []).map((e: { course_id: string }) => e.course_id);
+    const lessonsQuery = enrolledCourseIds.length
+      ? supabase.from('lessons').select('id, course_id, duration_seconds').in('course_id', enrolledCourseIds)
+      : Promise.resolve({ data: [] as { id: string; course_id: string; duration_seconds: number }[] });
+    const { data: lessons } = await lessonsQuery;
     const signedCourseIds = new Set(((signedSigs || []) as { course_id: string }[]).map(s => s.course_id));
     const lessonByCourse = new Map<string, { id: string; duration: number }[]>();
     (lessons || []).forEach((l: { id: string; course_id: string; duration_seconds: number }) => {
@@ -190,34 +198,76 @@ export async function ensureEnrollment(userId: string, courseId: string) {
 // Cache the highest watched_seconds per lesson per user so we never persist
 // a lower value than what's already saved (resume from highest, not current).
 const highestWatchCache = new Map<string, number>();
+// In-flight write coalescing: while a save is pending for a (user,lesson),
+// any new caller awaits the same Promise. After it resolves we coalesce the
+// "next" pending value so we never have more than one in-flight + one queued
+// write per learner. Critical at scale — without this the 8s interval can
+// stack writes during slow networks and exhaust DB connections.
+const inFlight = new Map<string, Promise<void>>();
+const pending = new Map<string, { watched: number; completed: boolean }>();
 
-export async function saveLessonProgress(userId: string, lessonId: string, watched: number, completed: boolean) {
-  const key = `${userId}:${lessonId}`;
+async function flushSave(userId: string, lessonId: string, key: string) {
+  // Drain whatever the latest pending value is for this key.
+  const job = pending.get(key);
+  if (!job) { inFlight.delete(key); return; }
+  pending.delete(key);
   let prev = highestWatchCache.get(key);
   if (prev === undefined) {
     const { data } = await supabase.from('lesson_progress')
       .select('watched_seconds').eq('user_id', userId).eq('lesson_id', lessonId).maybeSingle();
     prev = data?.watched_seconds || 0;
   }
-  const next = Math.max(prev, Math.round(watched));
+  const next = Math.max(prev, Math.round(job.watched));
   highestWatchCache.set(key, next);
   await supabase.from('lesson_progress').upsert(
-    { user_id: userId, lesson_id: lessonId, watched_seconds: next, completed },
+    { user_id: userId, lesson_id: lessonId, watched_seconds: next, completed: job.completed },
     { onConflict: 'user_id,lesson_id' }
   );
+  // If more saves were queued while we were writing, drain them on the next tick.
+  if (pending.has(key)) {
+    inFlight.set(key, flushSave(userId, lessonId, key));
+  } else {
+    inFlight.delete(key);
+  }
+}
+
+export async function saveLessonProgress(userId: string, lessonId: string, watched: number, completed: boolean) {
+  const key = `${userId}:${lessonId}`;
+  // Coalesce: if a save is in flight, just record the latest desired state.
+  // The flushSave loop will pick it up after the current write completes.
+  const prevPending = pending.get(key);
+  pending.set(key, {
+    watched: Math.max(prevPending?.watched ?? 0, watched),
+    completed: prevPending?.completed || completed,
+  });
+  if (inFlight.has(key)) return inFlight.get(key);
+  const p = flushSave(userId, lessonId, key);
+  inFlight.set(key, p);
+  return p;
 }
 
 export async function recordAttempt(userId: string, lessonId: string, answers: number[], score: number, total: number, passed: boolean) {
   await supabase.from('quiz_attempts').insert({ user_id: userId, lesson_id: lessonId, score, total, passed, answers });
 }
 
+// Memoise signed URLs per page lifetime — switching back to a previous lesson
+// shouldn't re-hit Supabase storage. Entry expires 30 minutes before the
+// signed URL itself so we never serve a URL about to die mid-playback.
+const SIGNED_URL_TTL_SECONDS = 60 * 60 * 6;
+const SIGNED_URL_CACHE_MS = (SIGNED_URL_TTL_SECONDS - 30 * 60) * 1000;
+const signedUrlCache = new Map<string, { url: string; at: number }>();
+
 /** Resolve a signed URL for a video stored in the `course-videos` bucket. */
 export async function getVideoUrl(path: string | null) {
   if (!path) return null;
+  const cached = signedUrlCache.get(path);
+  if (cached && Date.now() - cached.at < SIGNED_URL_CACHE_MS) return cached.url;
   // Use a longer TTL so 1-hour videos don't expire mid-playback.
   // (Browser caching + signed URL means this does not increase DB load.)
-  const { data } = await supabase.storage.from('course-videos').createSignedUrl(path, 60 * 60 * 6);
-  return data?.signedUrl ?? null;
+  const { data } = await supabase.storage.from('course-videos').createSignedUrl(path, SIGNED_URL_TTL_SECONDS);
+  const url = data?.signedUrl ?? null;
+  if (url) signedUrlCache.set(path, { url, at: Date.now() });
+  return url;
 }
 
 // Reading material lives in a public bucket — supplementary, not gated.

@@ -44,16 +44,28 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
   // Has the user signed this course's agreement (if any)?
   // Refetch on tab focus / visibility so returning from the agreement-sign
   // view updates the unlocked state without a manual page refresh.
+  // RATE-LIMITED: at scale, naive refetch on every tab visibility/focus
+  // event creates a thundering herd against Supabase whenever many learners
+  // tab-switch in unison. We dedupe to at most one fetch per 30s.
   useEffect(() => {
     if (!user || !courseId) { setHasSignedAgreement(false); return; }
     let cancelled = false;
+    let lastFetchAt = 0;
+    const REFRESH_COOLDOWN_MS = 30_000;
     const fetchSig = () => {
       supabase.from('agreement_signatures').select('id').eq('user_id', user.id).eq('course_id', courseId).maybeSingle()
         .then(({ data }) => { if (!cancelled) setHasSignedAgreement(!!data); });
     };
     fetchSig();
-    const onVisible = () => { if (!document.hidden) { fetchSig(); reload(); } };
-    const onFocus = () => { fetchSig(); reload(); };
+    lastFetchAt = Date.now();
+    const maybeRefresh = () => {
+      if (Date.now() - lastFetchAt < REFRESH_COOLDOWN_MS) return;
+      lastFetchAt = Date.now();
+      fetchSig();
+      reload();
+    };
+    const onVisible = () => { if (!document.hidden) maybeRefresh(); };
+    const onFocus = () => { maybeRefresh(); };
     document.addEventListener('visibilitychange', onVisible);
     window.addEventListener('focus', onFocus);
     return () => {
@@ -183,13 +195,25 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
     return () => clearInterval(id);
   }, [user, lesson]);
 
-  // Persist on tab close / navigation away
+  // Persist on tab close / navigation away.
+  // beforeunload fires after most fetches have already been cancelled by the
+  // browser, so a regular Supabase call here is unreliable under load. We
+  // additionally listen to `pagehide` (more reliable on mobile / bfcache) and
+  // queue a best-effort save through saveLessonProgress, which itself dedupes
+  // in-flight writes so we never stack overlapping requests on close.
   useEffect(() => {
     const flush = () => {
-      if (user && lesson) saveLessonProgress(user.id, lesson.id, furthestRef.current, completedRef.current);
+      if (user && lesson) {
+        try { saveLessonProgress(user.id, lesson.id, furthestRef.current, completedRef.current); } catch { /* ignore */ }
+      }
     };
     window.addEventListener('beforeunload', flush);
-    return () => { window.removeEventListener('beforeunload', flush); flush(); };
+    window.addEventListener('pagehide', flush);
+    return () => {
+      window.removeEventListener('beforeunload', flush);
+      window.removeEventListener('pagehide', flush);
+      flush();
+    };
   }, [user, lesson]);
 
   // Auto-pause if the learner switches tabs / windows / minimises while the
@@ -249,10 +273,15 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
   const startedRef = useRef(false);
   useEffect(() => { startedRef.current = false; }, [activeId]);
   const seekGuardRef = useRef(false);
+  // Throttle React state updates from timeupdate. The browser fires this 4-15
+  // times per second; turning every event into a setState causes the entire
+  // Player tree (including the lesson sidebar list) to re-reconcile that
+  // often. We update displayed time at most ~3 Hz while still tracking the
+  // real currentTime in refs every event (so seek-guard logic remains exact).
+  const lastUiTickRef = useRef(0);
   const onTimeUpdate = () => {
     const v = videoRef.current; if (!v) return;
     const cur = v.currentTime;
-    setT(cur);
     const prevFurthest = furthestRef.current;
     // Restrict forward seeking: user must watch the entire video.
     // Allow a tiny tolerance for normal playback jitter.
@@ -267,7 +296,12 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
     }
     if (cur > prevFurthest) {
       furthestRef.current = cur;
-      setFurthest(cur);
+    }
+    const now = Date.now();
+    if (now - lastUiTickRef.current >= 333) {
+      lastUiTickRef.current = now;
+      setT(cur);
+      if (cur > furthestRef.current - 0.001) setFurthest(furthestRef.current);
     }
     // First-watch ping: persist immediately so course flips to "In progress" without waiting.
     if (!startedRef.current && cur > 0.5 && user && lesson) {

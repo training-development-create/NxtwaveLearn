@@ -45,11 +45,18 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
     // existed → quiz restarted from scratch on every tab switch).
     restoredRef.current = true;
   }, [persistKey]);
+  // Debounce the localStorage write. Synchronous JSON.stringify + setItem on
+  // every keystroke can stall the main thread for users on low-end devices,
+  // and at scale we don't need millisecond-perfect persistence — 200ms after
+  // the last change is more than enough to survive tab switches.
   useEffect(() => {
     if (!persistKey || !restoredRef.current) return;
-    try {
-      localStorage.setItem(persistKey, JSON.stringify({ stage, idx, answers, flagged: Array.from(flagged) }));
-    } catch { /* quota or serialisation failure — ignore */ }
+    const t = setTimeout(() => {
+      try {
+        localStorage.setItem(persistKey, JSON.stringify({ stage, idx, answers, flagged: Array.from(flagged) }));
+      } catch { /* quota or serialisation failure — ignore */ }
+    }, 200);
+    return () => clearTimeout(t);
   }, [persistKey, stage, idx, answers, flagged]);
 
   // The active question list — always the full quiz now. (Previously the

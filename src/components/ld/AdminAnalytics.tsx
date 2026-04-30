@@ -85,6 +85,11 @@ export function AdminAnalytics() {
   const [profilesAll, setProfilesAll] = useState<ProfileMini[]>([]);
   const progArrRef = useRef<{ user_id: string; lesson_id: string; watched_seconds: number; completed: boolean }[]>([]);
   const attArrRef = useRef<{ user_id: string; lesson_id: string; score: number; total: number; passed: boolean }[]>([]);
+  // Bumped at the end of every loadStats() so memoized aggregates that read
+  // progArrRef / attArrRef recompute. Refs alone don't trigger React re-renders,
+  // which is why the manager leaderboard "completed" counts were going stale
+  // even though realtime updates were refreshing the underlying data.
+  const [progVersion, setProgVersion] = useState(0);
   const [department, setDepartment] = useState<string>('all');
   const [subDepartment, setSubDepartment] = useState<string>('all');
   const [managerEmail, setManagerEmail] = useState<string>('all');
@@ -215,13 +220,13 @@ export function AdminAnalytics() {
       passRate: attArr.length ? Math.round((attArr.filter(a => a.passed).length / attArr.length) * 100) : 0,
     });
 
-    setRetention(lessonsForCourse.map(l => {
+    setRetention(courseLessons.map(l => {
       if (!enrolledIds.size) return { id: l.id, title: l.title, pct: 0 };
       const done = progArr.filter(p => p.lesson_id === l.id && p.completed && enrolledIds.has(p.user_id)).length;
       return { id: l.id, title: l.title, pct: Math.round((done / enrolledIds.size) * 100) };
     }));
 
-    setLessonWatch(lessonsForCourse.map(l => {
+    setLessonWatch(courseLessons.map(l => {
       const rows = progArr.filter(p => p.lesson_id === l.id && enrolledIds.has(p.user_id));
       const totalSec = rows.reduce((s, p) => s + (p.watched_seconds || 0), 0);
       const avgPct = enrolledIds.size && l.duration_seconds
@@ -251,6 +256,9 @@ export function AdminAnalytics() {
     }).filter(Boolean) as LearnerRow[];
     rows.sort((a, b) => b.watchSec - a.watchSec);
     setLearners(rows);
+    // Signal that progArrRef / attArrRef have new data — forces stats useMemo
+    // (manager leaderboard, dept rollups) to recompute with fresh progress.
+    setProgVersion(v => v + 1);
   };
 
   useEffect(() => {
@@ -294,7 +302,9 @@ export function AdminAnalytics() {
       .sort((a, b) => b.pending - a.pending);
 
     return { dStats, mStats };
-  }, [profilesAll, department, subDepartment, lessonIds]);
+    // progVersion is included so the memo recomputes when progArrRef.current
+    // is refreshed by loadStats() — refs alone don't trigger React updates.
+  }, [profilesAll, department, subDepartment, lessonIds, progVersion]);
 
   const departmentStats = stats.dStats;
   const managerStats = stats.mStats;
@@ -795,8 +805,19 @@ function EmployeeDetailModal({ user, onClose, focusCourseId }: { user: LearnerRo
           signedPath: sig?.agreement_pdf_path ?? null,
         };
       });
-      // Show all course activity for the user (remove focusCourseId filter)
-      setDetails(out);
+      // Only show courses the user is actually enrolled in / assigned to.
+      // Without this, the modal listed every course in the system and made it
+      // look like the user "had" courses they were never assigned. Also pull in
+      // any course the user has activity in (progress / attempts / signature)
+      // even if the enrollment row is missing, so we don't accidentally hide
+      // legitimate work due to a stale enrollment.
+      const activeCourseIds = new Set<string>();
+      (lessons || []).forEach((l: { id: string; course_id: string }) => {
+        if (progByLesson.has(l.id) || attsByLesson.has(l.id)) activeCourseIds.add(l.course_id);
+      });
+      sigByCourse.forEach((_v, cid) => activeCourseIds.add(cid));
+      const visible = out.filter(c => enrolledIds.has(c.id) || activeCourseIds.has(c.id));
+      setDetails(visible);
       setLoading(false);
     })();
   }, [user.id, focusCourseId]);
@@ -987,10 +1008,17 @@ function PerLessonWatch({ lessonId, runtime, courseId, search, allowedUserIds, o
     const ch = supabase
       .channel(chNameRef.current)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'lesson_progress', filter: `lesson_id=eq.${lessonId}` }, () => load())
+      // quiz_attempts must trigger an immediate refresh too — without it the
+      // per-video table only picks up new assessment scores on the 5s poll,
+      // which feels stale when admins watch a learner finish a quiz live.
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'quiz_attempts', filter: `lesson_id=eq.${lessonId}` }, () => load())
+      // Enrollment changes (admin assigns/unassigns) should also reflect live.
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'enrollments', filter: `course_id=eq.${courseId}` }, () => load())
       .subscribe();
     return () => { supabase.removeChannel(ch); };
+  // Re-subscribe when courseId changes too — the enrollments filter depends on it.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lessonId]);
+  }, [lessonId, courseId]);
 
   useEffect(() => {
     const id = setInterval(() => load(), 5000);
