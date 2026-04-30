@@ -1071,7 +1071,12 @@ function PerLessonWatch({ lessonId, runtime, courseId, search, allowedUserIds, o
   const [rows, setRows] = useState<{ id: string; name: string; email: string; empId: string; department?: string | null; managerName?: string | null; managerEmail?: string | null; managerContact?: string | null; sec: number; pct: number; completed: boolean; quizPct: number; attempts: number }[]>([]);
   const chNameRef = useRef<string>('');
   const load = async () => {
-    const [{ data: enrolls }, { data: progress }, { data: profiles }, { data: attempts }] = await Promise.all([
+    // Strict completion needs the course-level agreement requirement and the
+    // set of users who've signed for THIS course — without them the row would
+    // mark "Completed" the moment lesson_progress.completed flipped, even if
+    // the learner scored < 100% or never signed the agreement. Status must
+    // match the rule used by KPIs / leaderboard / detail modal.
+    const [{ data: enrolls }, { data: progress }, { data: profiles }, { data: attempts }, { data: courseRow }, { data: sigs }] = await Promise.all([
       supabase.from('enrollments').select('user_id').eq('course_id', courseId),
       supabase.from('lesson_progress').select('user_id, watched_seconds, completed').eq('lesson_id', lessonId),
       supabase.from('employees')
@@ -1079,7 +1084,11 @@ function PerLessonWatch({ lessonId, runtime, courseId, search, allowedUserIds, o
         .not('auth_user_id', 'is', null)
         .eq('status', 'active'),  // exited employees must not appear in per-video table
       supabase.from('quiz_attempts').select('user_id, score, total').eq('lesson_id', lessonId),
+      supabase.from('courses').select('agreement_required').eq('id', courseId).maybeSingle(),
+      supabase.from('agreement_signatures').select('user_id').eq('course_id', courseId).range(0, 99999),
     ]);
+    const agreementRequired = !!(courseRow as { agreement_required?: boolean | null } | null)?.agreement_required;
+    const signedSet = new Set(((sigs || []) as { user_id: string }[]).map(s => s.user_id));
     const enrolledIds = new Set((enrolls || []).map((e: { user_id: string }) => e.user_id));
     const profById = new Map(
       ((profiles || []) as unknown as EmployeeJoinRow[])
@@ -1102,11 +1111,17 @@ function PerLessonWatch({ lessonId, runtime, courseId, search, allowedUserIds, o
         const sec = p?.watched_seconds || 0;
         const atts = attsByUser.get(uid) || [];
         const quizPct = atts.length ? atts.reduce((m, a) => Math.max(m, a.total ? Math.round((a.score/a.total)*100) : 0), 0) : 0;
+        // Strict gate: video done AND assessment 100% AND (signed when course requires it).
+        // Anything less keeps the row in "In progress" (or "Not started" if no watch yet).
+        const watchDone = !!p?.completed;
+        const quizPassedFully = quizPct === 100;
+        const agreementOk = !agreementRequired || signedSet.has(uid);
+        const fullyCompleted = watchDone && quizPassedFully && agreementOk;
         return {
           id: uid, name: u?.full_name || u?.email || '—', email: u?.email || '', empId: u?.employee_id || '—',
           department: u?.department, subDepartment: u?.sub_department, managerName: u?.manager_name, managerEmail: u?.manager_email, managerContact: u?.manager_contact,
           sec, pct: runtime ? Math.min(100, Math.round((sec / runtime) * 100)) : 0,
-          completed: !!p?.completed,
+          completed: fullyCompleted,
           quizPct,
           attempts: atts.length,
         };
@@ -1129,6 +1144,9 @@ function PerLessonWatch({ lessonId, runtime, courseId, search, allowedUserIds, o
       .on('postgres_changes', { event: '*', schema: 'public', table: 'quiz_attempts', filter: `lesson_id=eq.${lessonId}` }, () => load())
       // Enrollment changes (admin assigns/unassigns) should also reflect live.
       .on('postgres_changes', { event: '*', schema: 'public', table: 'enrollments', filter: `course_id=eq.${courseId}` }, () => load())
+      // Agreement signing flips the strict "Completed" gate — must refresh so
+      // the row turns green the instant the learner signs, not on the 5s poll.
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'agreement_signatures', filter: `course_id=eq.${courseId}` }, () => load())
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   // Re-subscribe when courseId changes too — the enrollments filter depends on it.
