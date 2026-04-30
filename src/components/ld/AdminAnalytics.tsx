@@ -113,6 +113,10 @@ export function AdminAnalytics() {
   const [retention, setRetention] = useState<{ id: string; title: string; pct: number }[]>([]);
   const [search, setSearch] = useState('');
   const [detailUser, setDetailUser] = useState<LearnerRow | null>(null);
+  // Export state — MUST be declared before any early return so the hook
+  // count stays stable across renders (otherwise React error #310 fires
+  // the moment `courses.length` flips from 0 → N).
+  const [exporting, setExporting] = useState<null | 'csv' | 'zip'>(null);
   // Department / manager analytics state.
   const [profilesAll, setProfilesAll] = useState<ProfileMini[]>([]);
   const progArrRef = useRef<{ user_id: string; lesson_id: string; watched_seconds: number; completed: boolean }[]>([]);
@@ -497,8 +501,8 @@ export function AdminAnalytics() {
   // Both pull from `filtered` (so the active search/department/manager
   // filters are honoured) and join in agreement signatures so the sheet
   // marks exactly who signed and where the stamped PDF lives in storage.
-  const [exporting, setExporting] = useState<null | 'csv' | 'zip'>(null);
-
+  // Note: `exporting` state is declared at the top of the component,
+  // before the early return, to keep hook order stable (React #310).
   const buildExportRows = async () => {
     const courseRow = courses.find(c => c.id === course);
     // Pull all signatures for this course in one round-trip; map by user_id
