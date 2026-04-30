@@ -25,7 +25,11 @@ export function AdminDashboard({ onNav }: { onNav: Nav }) {
 
     // employees rows with a non-null auth_user_id == people who have actually logged in.
     type EmpRow = { id: string; auth_user_id: string; name: string; email: string };
-    const empRows = (empRows as EmpRow[]).map(e => ({ id: e.auth_user_id, full_name: e.name, email: e.email }));
+    // Was `(empRows as EmpRow[])` — a use-before-declaration that threw
+    // ReferenceError on every mount. The intended source is the `profiles`
+    // result destructured above (the employees query). Defensive `|| []`
+    // so a Supabase error doesn't crash the dashboard either.
+    const empRows = ((profiles || []) as EmpRow[]).map(e => ({ id: e.auth_user_id, full_name: e.name, email: e.email }));
     setActiveLearners(empRows.length);
     const totalAttemptsCount = (attempts || []).length;
     setTotalAttempts(totalAttemptsCount);

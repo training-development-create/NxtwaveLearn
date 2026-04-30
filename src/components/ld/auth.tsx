@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import type { Session, User } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
 
@@ -135,38 +135,105 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
 
+  // Race guard: both onAuthStateChange AND getSession() fire on mount, plus
+  // any later auth events. Without a sequence counter, a slow profile fetch
+  // from an early event can clobber state set by a later event (e.g. user
+  // signs out → in quickly). seqRef is incremented for every dispatch; only
+  // the latest wins.
+  const seqRef = useRef(0);
+  // Tracks unmount so async work that resolves after teardown doesn't call
+  // setState (React 18 logs warnings + leaks subscribers).
+  const mountedRef = useRef(true);
+
   useEffect(() => {
+    mountedRef.current = true;
+    const safeSet = <T,>(setter: (v: T) => void, v: T) => {
+      if (mountedRef.current) setter(v);
+    };
+
     const acceptOrReject = async (sess: Session | null) => {
-      if (!sess?.user) {
-        setSession(null); setUser(null); setProfile(null); setRole(null);
-        setLoading(false);
-        return;
+      const mySeq = ++seqRef.current;
+      const isStale = () => mySeq !== seqRef.current || !mountedRef.current;
+
+      try {
+        if (!sess?.user) {
+          if (isStale()) return;
+          safeSet(setSession, null); safeSet(setUser, null);
+          safeSet(setProfile, null); safeSet(setRole, null);
+          safeSet(setLoading, false);
+          return;
+        }
+        // Domain gate.
+        if (!isAllowedEmail(sess.user.email)) {
+          // Sign out is best-effort — if it throws (network), we still want
+          // to surface the error and clear local state so the user isn't
+          // stuck on a loading spinner.
+          try { await supabase.auth.signOut(); } catch (e) {
+            console.warn('[auth] signOut after domain gate failed:', e);
+          }
+          if (isStale()) return;
+          safeSet(setAuthError, `Access restricted to ${ALLOWED_EMAIL_DOMAINS.map(d => '@' + d).join(', ')} accounts only.`);
+          safeSet(setSession, null); safeSet(setUser, null);
+          safeSet(setProfile, null); safeSet(setRole, null);
+          safeSet(setLoading, false);
+          return;
+        }
+        if (isStale()) return;
+        safeSet(setAuthError, null);
+        safeSet(setSession, sess);
+        safeSet(setUser, sess.user);
+        safeSet(setLoading, true);
+        void touchLastLogin(sess.user.id);
+        try {
+          await loadProfileAndRole(sess.user.id);
+        } catch (e) {
+          // Without this, a thrown DB/RLS error would leave loading=true
+          // forever — user is stuck on the loading spinner. Surface to UI.
+          console.error('[auth] loadProfileAndRole threw:', e);
+          if (!isStale()) {
+            safeSet(setProfile, null);
+            safeSet(setRole, null);
+            safeSet(setAuthError, 'Could not load your profile. Please refresh or contact admin.');
+          }
+        }
+        if (!isStale()) safeSet(setLoading, false);
+      } catch (e) {
+        // Safety net: any unexpected throw above must still clear loading,
+        // otherwise the whole app hangs on the spinner forever.
+        console.error('[auth] acceptOrReject crashed:', e);
+        if (!isStale()) {
+          safeSet(setLoading, false);
+          safeSet(setAuthError, 'Sign-in failed. Please refresh and try again.');
+        }
       }
-      // Domain gate.
-      if (!isAllowedEmail(sess.user.email)) {
-        await supabase.auth.signOut();
-        setAuthError(`Access restricted to ${ALLOWED_EMAIL_DOMAINS.map(d => '@' + d).join(', ')} accounts only.`);
-        setSession(null); setUser(null); setProfile(null); setRole(null);
-        setLoading(false);
-        return;
-      }
-      setAuthError(null);
-      setSession(sess);
-      setUser(sess.user);
-      setLoading(true);
-      void touchLastLogin(sess.user.id);
-      await loadProfileAndRole(sess.user.id);
-      setLoading(false);
       // Darwin sync is now done by daily bulk import, so login does not call HR API.
     };
 
-    const { data: sub } = supabase.auth.onAuthStateChange((_evt, sess) => {
-      void acceptOrReject(sess);
-    });
-    supabase.auth.getSession().then(({ data: { session: s } }) => {
-      void acceptOrReject(s);
-    });
-    return () => sub.subscription.unsubscribe();
+    let sub: { subscription?: { unsubscribe: () => void } } | undefined;
+    try {
+      const result = supabase.auth.onAuthStateChange((_evt, sess) => {
+        void acceptOrReject(sess);
+      });
+      sub = result?.data;
+    } catch (e) {
+      console.error('[auth] onAuthStateChange registration failed:', e);
+    }
+    // .catch() is critical — without it a getSession() rejection (network
+    // failure on first paint, expired refresh token, Supabase outage) would
+    // leave loading=true forever and the user stares at a blank spinner.
+    supabase.auth.getSession()
+      .then(({ data: { session: s } }) => { void acceptOrReject(s); })
+      .catch((e) => {
+        console.error('[auth] getSession failed:', e);
+        // Treat as logged-out so the Login screen shows instead of hanging.
+        void acceptOrReject(null);
+      });
+    return () => {
+      mountedRef.current = false;
+      try { sub?.subscription?.unsubscribe?.(); } catch (e) {
+        console.warn('[auth] unsubscribe failed:', e);
+      }
+    };
   }, []);
 
   const signInWithProvider = async (provider: 'google' | 'azure') => {
@@ -175,21 +242,41 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (provider === 'google' && ALLOWED_EMAIL_DOMAINS.length === 1) {
       queryParams.hd = ALLOWED_EMAIL_DOMAINS[0];
     }
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider,
-      options: {
-        redirectTo: `${window.location.origin}/`,
-        queryParams,
-        scopes: provider === 'azure' ? 'email openid profile' : undefined,
-      },
-    });
-    return { error: error?.message ?? null };
+    // signInWithOAuth normally returns { error } — but a network failure or
+    // bad client init can still throw before the response. Catch so the
+    // Login button gets a clean { error } back instead of an unhandled
+    // rejection that leaves the button stuck on "Opening Google…".
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider,
+        options: {
+          redirectTo: `${window.location.origin}/`,
+          queryParams,
+          scopes: provider === 'azure' ? 'email openid profile' : undefined,
+        },
+      });
+      return { error: error?.message ?? null };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Sign-in failed';
+      console.error('[auth] signInWithOAuth threw:', e);
+      return { error: msg };
+    }
   };
 
   const signInWithGoogle: AuthCtx['signInWithGoogle'] = () => signInWithProvider('google');
   const signInWithMicrosoft: AuthCtx['signInWithMicrosoft'] = () => signInWithProvider('azure');
 
-  const signOut = async () => { setAuthError(null); await supabase.auth.signOut(); };
+  const signOut = async () => {
+    setAuthError(null);
+    // signOut can reject (network failure / token already invalid). If we
+    // don't catch, the caller's UI is stuck mid-action ("Signing out…"
+    // button disabled forever). Best-effort: clear local state regardless.
+    try {
+      await supabase.auth.signOut();
+    } catch (e) {
+      console.warn('[auth] signOut failed:', e);
+    }
+  };
 
   const refresh = async () => {
     if (user) await loadProfileAndRole(user.id);

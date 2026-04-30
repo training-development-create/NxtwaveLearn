@@ -93,50 +93,81 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
   const [subDepartments, setSubDepartments] = useState<SubDept[]>([]);
   const [employeesAll, setEmployeesAll] = useState<EmpOpt[]>([]);
 
-  useEffect(() => {
-    (async () => {
-      // Supabase JS caps single queries at 1000 rows by default. With 3000+
-      // employees that hides 2/3 of the org from the picker (the symptom you
-      // hit: manager appeared to have 14 reports when DB had 16). Page through
-      // 1000-row chunks until we've fetched everything.
-      type Row = Omit<EmpOpt, 'is_manager'>;
-      const fetchAllEmployees = async (): Promise<Row[]> => {
-        const all: Row[] = [];
-        const page = 1000;
-        for (let from = 0; ; from += page) {
-          const { data, error } = await supabase
-            .from('employees')
-            .select('id, name, email, department_id, sub_department_id, manager_id, status')
-            .eq('status', 'active')
-            .order('name', { ascending: true })
-            .range(from, from + page - 1);
-          if (error) { console.warn('[AdminUpload] employee paging stopped:', error.message); break; }
-          if (!data || data.length === 0) break;
-          all.push(...(data as Row[]));
-          if (data.length < page) break;
-        }
-        return all;
-      };
+  // Extracted so the realtime listener + the manual sync broadcast can both
+  // re-run it without duplicating the paging logic.
+  const reloadOrgRef = useRef<() => Promise<void>>(async () => {});
+  reloadOrgRef.current = async () => {
+    // Supabase JS caps single queries at 1000 rows by default. With 3000+
+    // employees that hides 2/3 of the org from the picker (the symptom you
+    // hit: manager appeared to have 14 reports when DB had 16). Page through
+    // 1000-row chunks until we've fetched everything.
+    type Row = Omit<EmpOpt, 'is_manager'>;
+    const fetchAllEmployees = async (): Promise<Row[]> => {
+      const all: Row[] = [];
+      const page = 1000;
+      for (let from = 0; ; from += page) {
+        const { data, error } = await supabase
+          .from('employees')
+          .select('id, name, email, department_id, sub_department_id, manager_id, status')
+          .eq('status', 'active')
+          .order('name', { ascending: true })
+          .range(from, from + page - 1);
+        if (error) { console.warn('[AdminUpload] employee paging stopped:', error.message); break; }
+        if (!data || data.length === 0) break;
+        all.push(...(data as Row[]));
+        if (data.length < page) break;
+      }
+      return all;
+    };
 
-      const [{ data: d }, { data: s }, allEmployees] = await Promise.all([
-        supabase.from('departments').select('id, name').order('name').range(0, 9999),
-        supabase.from('sub_departments').select('id, name, department_id').order('name').range(0, 9999),
-        fetchAllEmployees(),
-      ]);
-      setDepartments((d || []) as Dept[]);
-      setSubDepartments((s || []) as SubDept[]);
-      // A "manager" is anyone in the active set who has at least one direct
-      // report — derived from the same paged list so we never miss reports.
-      const reportCounts = new Map<string, number>();
-      allEmployees.forEach((row) => {
-        if (!row.manager_id) return;
-        reportCounts.set(row.manager_id, (reportCounts.get(row.manager_id) ?? 0) + 1);
-      });
-      setEmployeesAll(allEmployees.map(emp => ({
-        ...emp,
-        is_manager: (reportCounts.get(emp.id) ?? 0) > 0,
-      })));
-    })();
+    const [{ data: d }, { data: s }, allEmployees] = await Promise.all([
+      supabase.from('departments').select('id, name').order('name').range(0, 9999),
+      supabase.from('sub_departments').select('id, name, department_id').order('name').range(0, 9999),
+      fetchAllEmployees(),
+    ]);
+    setDepartments((d || []) as Dept[]);
+    setSubDepartments((s || []) as SubDept[]);
+    // A "manager" is anyone in the active set who has at least one direct
+    // report — derived from the same paged list so we never miss reports.
+    const reportCounts = new Map<string, number>();
+    allEmployees.forEach((row) => {
+      if (!row.manager_id) return;
+      reportCounts.set(row.manager_id, (reportCounts.get(row.manager_id) ?? 0) + 1);
+    });
+    setEmployeesAll(allEmployees.map(emp => ({
+      ...emp,
+      is_manager: (reportCounts.get(emp.id) ?? 0) > 0,
+    })));
+  };
+
+  useEffect(() => {
+    reloadOrgRef.current();
+  }, []);
+
+  // Live employee directory: refresh when the admin clicks Sync Now in
+  // Analytics (instant), AND when the employees / departments tables change
+  // for any reason (debounced postgres_changes — covers nightly cron, the
+  // Admins page promoting people, etc.). Without this, AdminUpload's
+  // employee picker would stay stale until the page is reloaded.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const debouncedReload = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => { reloadOrgRef.current().catch(() => {}); }, 800);
+    };
+    const onSynced = () => { reloadOrgRef.current().catch(() => {}); };
+    window.addEventListener('employees-synced', onSynced);
+    const ch = supabase
+      .channel(`admin-upload-org-${Math.random().toString(36).slice(2)}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'employees' }, debouncedReload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'departments' }, debouncedReload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sub_departments' }, debouncedReload)
+      .subscribe();
+    return () => {
+      window.removeEventListener('employees-synced', onSynced);
+      if (timer) clearTimeout(timer);
+      supabase.removeChannel(ch);
+    };
   }, []);
 
   const filteredSubDepts = subDepartments.filter(s => assignDeptIds.length === 0 || assignDeptIds.includes(s.department_id));

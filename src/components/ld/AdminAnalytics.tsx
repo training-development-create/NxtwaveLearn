@@ -63,18 +63,50 @@ export function AdminAnalytics() {
   const [kpi, setKpi] = useState({ enrolled: 0, watchPct: 0, completion: 0, passRate: 0, totalWatchSec: 0 });
   // HRMS sync controls
   const [syncing, setSyncing] = useState(false);
-  const [syncResult, setSyncResult] = useState<{ ok: boolean; imported?: number; exited?: number; ts: string } | null>(null);
+  const [syncResult, setSyncResult] = useState<{ ok: boolean; imported?: number; exited?: number; ts: string; error?: string } | null>(null);
   const triggerSync = async () => {
     setSyncing(true);
+    const ts = () => new Date().toLocaleTimeString();
     try {
-      const { data, error } = await supabase.functions.invoke('sync-employees-daily', { body: {} });
-      if (error) setSyncResult({ ok: false, ts: new Date().toLocaleTimeString() });
-      else setSyncResult({ ok: true, imported: data?.imported ?? 0, exited: data?.exited ?? 0, ts: new Date().toLocaleTimeString() });
-      // Reload stats so counts reflect any newly exited employees.
-      await loadStats();
-    } catch {
-      setSyncResult({ ok: false, ts: new Date().toLocaleTimeString() });
-    } finally { setSyncing(false); }
+      // 60s timeout — Darwinbox or the edge function can hang. Without a
+      // race, the button stays "Syncing…" forever and the admin has no way
+      // to recover short of a page reload.
+      const SYNC_TIMEOUT_MS = 60_000;
+      const invokePromise = supabase.functions.invoke('sync-employees-daily', { body: {} });
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`Timed out after ${SYNC_TIMEOUT_MS / 1000}s`)), SYNC_TIMEOUT_MS),
+      );
+      const result = await Promise.race([invokePromise, timeoutPromise]) as Awaited<typeof invokePromise>;
+      const { data, error } = result;
+      if (error) {
+        setSyncResult({ ok: false, ts: ts(), error: error.message || 'Edge function error' });
+        return;
+      }
+      const imported = Number(data?.imported ?? 0);
+      const exited = Number(data?.exited ?? 0);
+      setSyncResult({ ok: true, imported, exited, ts: ts() });
+      // Refresh the org snapshot FIRST so newly imported employees appear in
+      // dept/manager dropdowns and per-video tables, then refresh stats so
+      // counts reflect the new roster (and exited people drop out everywhere
+      // because every loadEmployees query filters status='active').
+      try {
+        await loadEmployees();
+        await loadStats();
+      } catch (refreshErr) {
+        console.warn('[AdminAnalytics] post-sync refresh failed:', refreshErr);
+      }
+      // Broadcast so the other admin pages (Upload, Modules, Admins) can
+      // refresh their employee lists immediately — without this they'd have
+      // to wait for the realtime channel or a page reload.
+      try {
+        window.dispatchEvent(new CustomEvent('employees-synced', { detail: { imported, exited, at: Date.now() } }));
+      } catch { /* ignore — non-critical */ }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Unknown error';
+      setSyncResult({ ok: false, ts: ts(), error: msg });
+    } finally {
+      setSyncing(false);
+    }
   };
   const [lessonWatch, setLessonWatch] = useState<LessonWatch[]>([]);
   const [learners, setLearners] = useState<LearnerRow[]>([]);
@@ -425,8 +457,13 @@ export function AdminAnalytics() {
         <span style={{fontSize:13, fontWeight:700, color:'#0A1F3D'}}>🔄 HRMS Sync</span>
         <span style={{fontSize:12, color:'#5B6A7D', flex:1}}>Keep employee data current with Darwinbox. Exited employees are removed automatically every hour.</span>
         {syncResult && (
-          <span style={{fontSize:11, color: syncResult.ok ? '#17A674' : '#C2261D', fontWeight:600}}>
-            {syncResult.ok ? `✓ ${syncResult.imported} imported · ${syncResult.exited} exited · ${syncResult.ts}` : `✗ Sync failed · ${syncResult.ts}`}
+          <span
+            title={!syncResult.ok && syncResult.error ? syncResult.error : undefined}
+            style={{fontSize:11, color: syncResult.ok ? '#17A674' : '#C2261D', fontWeight:600, maxWidth:420, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}
+          >
+            {syncResult.ok
+              ? `✓ ${syncResult.imported} imported · ${syncResult.exited} exited · ${syncResult.ts}`
+              : `✗ Sync failed${syncResult.error ? `: ${syncResult.error}` : ''} · ${syncResult.ts}`}
           </span>
         )}
         <button

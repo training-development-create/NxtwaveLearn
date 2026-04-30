@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAuth, ALLOWED_EMAIL_DOMAINS } from "./auth";
 
 export function Login() {
@@ -6,15 +6,35 @@ export function Login() {
   const [loading, setLoading] = useState<null | 'google' | 'microsoft'>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // OAuth call awaits — if the user closes the popup, denies the prompt, or
+  // an auth-state-change tears down this component while we're still
+  // awaiting, the post-await setState would leak and React would warn. Gate
+  // both setError + setLoading on a mounted ref.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
   const handle = async (provider: 'google' | 'microsoft') => {
     setError(null);
     setLoading(provider);
-    const { error } = provider === 'google' ? await signInWithGoogle() : await signInWithMicrosoft();
-    if (error) {
-      setError(error);
+    try {
+      const { error } = provider === 'google' ? await signInWithGoogle() : await signInWithMicrosoft();
+      if (!mountedRef.current) return;
+      if (error) {
+        setError(error);
+        setLoading(null);
+      }
+      // On success, the OAuth redirect navigates away from the page.
+    } catch (e) {
+      // Defense in depth — auth.tsx already catches inside signInWithProvider,
+      // but if anything slips through we still want the button to recover.
+      if (!mountedRef.current) return;
+      const msg = e instanceof Error ? e.message : 'Sign-in failed';
+      setError(msg);
       setLoading(null);
     }
-    // On success, the OAuth redirect navigates away from the page.
   };
 
   const message = error || authError;

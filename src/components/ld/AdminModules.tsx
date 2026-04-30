@@ -1,5 +1,5 @@
 // Admin Modules: list/edit/delete courses & lessons + edit assignment scope.
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Btn, Card, Chip, EmptyState } from "./ui";
 import type { Nav } from "./App";
@@ -145,44 +145,71 @@ function EditAssignmentModal({ course, onClose, onSaved }: { course: Course; onC
   // employee directory and inserts course_assignments rows for matched users.
   const [csvOpen, setCsvOpen] = useState(false);
 
-  useEffect(() => {
-    (async () => {
-      setLoading(true); setErr(null);
-      // Page through employees (avoid Supabase 1000-row default).
-      type Row = Omit<EmpOpt, 'is_manager'>;
-      const fetchAllEmployees = async (): Promise<Row[]> => {
-        const all: Row[] = [];
-        const page = 1000;
-        for (let from = 0; ; from += page) {
-          const { data, error } = await supabase
-            .from('employees')
-            .select('id, name, email, department_id, sub_department_id, manager_id, status')
-            .eq('status', 'active').order('name').range(from, from + page - 1);
-          if (error) { console.warn('[modules] paging stop:', error.message); break; }
-          if (!data || data.length === 0) break;
-          all.push(...(data as Row[]));
-          if (data.length < page) break;
-        }
-        return all;
-      };
+  // Extracted so realtime + sync-broadcast can re-run it without dup logic.
+  const reloadRef = useRef<() => Promise<void>>(async () => {});
+  reloadRef.current = async () => {
+    setLoading(true); setErr(null);
+    // Page through employees (avoid Supabase 1000-row default).
+    type Row = Omit<EmpOpt, 'is_manager'>;
+    const fetchAllEmployees = async (): Promise<Row[]> => {
+      const all: Row[] = [];
+      const page = 1000;
+      for (let from = 0; ; from += page) {
+        const { data, error } = await supabase
+          .from('employees')
+          .select('id, name, email, department_id, sub_department_id, manager_id, status')
+          .eq('status', 'active').order('name').range(from, from + page - 1);
+        if (error) { console.warn('[modules] paging stop:', error.message); break; }
+        if (!data || data.length === 0) break;
+        all.push(...(data as Row[]));
+        if (data.length < page) break;
+      }
+      return all;
+    };
 
-      const [{ data: d }, { data: s }, allEmps, { data: ass }, { data: assignedRpc }] = await Promise.all([
-        supabase.from('departments').select('id, name').order('name').range(0, 9999),
-        supabase.from('sub_departments').select('id, name, department_id').order('name').range(0, 9999),
-        fetchAllEmployees(),
-        supabase.from('course_assignments').select('id, scope_all, department_id, sub_department_id, manager_id, employee_id').eq('course_id', course.id),
-        supabase.rpc('assigned_employees', { _course_id: course.id }),
-      ]);
-      setDepartments((d || []) as Dept[]);
-      setSubDepartments((s || []) as SubDept[]);
-      const reportCounts = new Map<string, number>();
-      allEmps.forEach(e => { if (e.manager_id) reportCounts.set(e.manager_id, (reportCounts.get(e.manager_id) ?? 0) + 1); });
-      setEmployeesAll(allEmps.map(e => ({ ...e, is_manager: (reportCounts.get(e.id) ?? 0) > 0 })));
-      setAssignments((ass || []) as Assignment[]);
-      setResolvedAssignedSet(new Set(((assignedRpc || []) as { employee_id: string }[]).map(r => r.employee_id)));
-      setLoading(false);
-    })();
-  }, [course.id]);
+    const [{ data: d }, { data: s }, allEmps, { data: ass }, { data: assignedRpc }] = await Promise.all([
+      supabase.from('departments').select('id, name').order('name').range(0, 9999),
+      supabase.from('sub_departments').select('id, name, department_id').order('name').range(0, 9999),
+      fetchAllEmployees(),
+      supabase.from('course_assignments').select('id, scope_all, department_id, sub_department_id, manager_id, employee_id').eq('course_id', course.id),
+      supabase.rpc('assigned_employees', { _course_id: course.id }),
+    ]);
+    setDepartments((d || []) as Dept[]);
+    setSubDepartments((s || []) as SubDept[]);
+    const reportCounts = new Map<string, number>();
+    allEmps.forEach(e => { if (e.manager_id) reportCounts.set(e.manager_id, (reportCounts.get(e.manager_id) ?? 0) + 1); });
+    setEmployeesAll(allEmps.map(e => ({ ...e, is_manager: (reportCounts.get(e.id) ?? 0) > 0 })));
+    setAssignments((ass || []) as Assignment[]);
+    setResolvedAssignedSet(new Set(((assignedRpc || []) as { employee_id: string }[]).map(r => r.employee_id)));
+    setLoading(false);
+  };
+
+  useEffect(() => { reloadRef.current(); }, [course.id]);
+
+  // Live employee directory: refresh on Sync Now broadcast (instant) AND on
+  // any employees/departments table change (debounced 800ms). This keeps
+  // the assignment picker in sync with new joiners, exits, dept/manager
+  // changes — without forcing the admin to reload the page.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const debouncedReload = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => { reloadRef.current().catch(() => {}); }, 800);
+    };
+    const onSynced = () => { reloadRef.current().catch(() => {}); };
+    window.addEventListener('employees-synced', onSynced);
+    const ch = supabase
+      .channel(`admin-modules-org-${Math.random().toString(36).slice(2)}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'employees' }, debouncedReload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'departments' }, debouncedReload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sub_departments' }, debouncedReload)
+      .subscribe();
+    return () => {
+      window.removeEventListener('employees-synced', onSynced);
+      if (timer) clearTimeout(timer);
+      supabase.removeChannel(ch);
+    };
+  }, []);
 
   const isCurrentlyScopeAll = useMemo(() => assignments.some(a => a.scope_all), [assignments]);
   const assignedDeptIds = useMemo(() => new Set(assignments.map(a => a.department_id).filter(Boolean) as string[]), [assignments]);

@@ -64,6 +64,32 @@ export function AdminAdmins() {
   };
   useEffect(() => { load(); }, []);
 
+  // Live refresh: respond to Sync Now broadcast (instant) AND to any
+  // employees-table changes (debounced 800ms). Without this, freshly
+  // imported employees, exits, and promotions wouldn't appear here until
+  // the admin reloads the page.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const debouncedReload = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => { load(); }, 800);
+    };
+    const onSynced = () => { load(); };
+    window.addEventListener('employees-synced', onSynced);
+    const ch = supabase
+      .channel(`admin-admins-org-${Math.random().toString(36).slice(2)}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'employees' }, debouncedReload)
+      .subscribe();
+    return () => {
+      window.removeEventListener('employees-synced', onSynced);
+      if (timer) clearTimeout(timer);
+      supabase.removeChannel(ch);
+    };
+    // load is stable enough — re-running this effect on every render would
+    // tear down + recreate the realtime channel, which is wasteful.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Auto-clear flash toast after a few seconds.
   useEffect(() => {
     if (!flash) return;
