@@ -377,6 +377,92 @@ function EditAssignmentModal({ course, onClose, onSaved }: { course: Course; onC
     }
   };
 
+  // Hard-remove a SINGLE learner from this course, regardless of which scope
+  // is currently covering them. We:
+  //   1. Wipe their data for this course (enrollments, lesson_progress,
+  //      quiz_attempts, agreement_signatures) — so they vanish from
+  //      analytics + the user portal immediately.
+  //   2. Drop ANY EMP-scoped course_assignments row that targets them
+  //      directly (otherwise the on_assignment_change trigger would
+  //      re-enroll them).
+  //   3. Add an EMP-scope EXCLUSION row IF they are still resolved by
+  //      another scope (DEPT / SUB / MGR / ALL). Without an explicit
+  //      exclusion the next sync re-enrolls them. We persist this via
+  //      a course_assignment_exclusions row when that table exists; if
+  //      the column/table isn't there we fall back to a console warning
+  //      so the admin sees what happened.
+  const removeLearnerHard = async (employeeRowId: string, displayName: string) => {
+    if (!confirm(`Remove ${displayName} from this course?\n\nALL their progress, quiz attempts, and signed agreement for this course will be permanently deleted. They will disappear from analytics and the user portal immediately.`)) return;
+    setBusy(true); setErr(null);
+    try {
+      // 1. Resolve auth_user_id for the employee row (if they've ever logged in).
+      const { data: empRow, error: empErr } = await supabase
+        .from('employees').select('auth_user_id').eq('id', employeeRowId).maybeSingle();
+      if (empErr) throw empErr;
+      const authId = (empRow as { auth_user_id: string | null } | null)?.auth_user_id ?? null;
+
+      // 2. Drop EMP-scoped assignment row(s) targeting this employee.
+      const { error: scopeErr } = await supabase
+        .from('course_assignments').delete()
+        .eq('course_id', course.id).eq('employee_id', employeeRowId);
+      if (scopeErr) throw scopeErr;
+
+      // 3. Cascade-delete the learner's data for this course.
+      if (authId) {
+        const { data: lessonRows, error: lessonsErr } = await supabase
+          .from('lessons').select('id').eq('course_id', course.id);
+        if (lessonsErr) throw lessonsErr;
+        const lIds = ((lessonRows || []) as { id: string }[]).map(r => r.id);
+
+        type DelResult = { error: { message: string } | null };
+        const ops: Promise<DelResult>[] = [
+          supabase.from('enrollments').delete()
+            .eq('course_id', course.id).eq('user_id', authId) as unknown as Promise<DelResult>,
+          supabase.from('agreement_signatures').delete()
+            .eq('course_id', course.id).eq('user_id', authId) as unknown as Promise<DelResult>,
+        ];
+        if (lIds.length > 0) {
+          ops.push(supabase.from('lesson_progress').delete()
+            .in('lesson_id', lIds).eq('user_id', authId) as unknown as Promise<DelResult>);
+          ops.push(supabase.from('quiz_attempts').delete()
+            .in('lesson_id', lIds).eq('user_id', authId) as unknown as Promise<DelResult>);
+        }
+        const results = await Promise.all(ops);
+        for (const r of results) { if (r.error) throw r.error; }
+      }
+
+      // 4. Re-resolve the assignment after deletion so the UI reflects truth.
+      const { data: nextRpc } = await supabase.rpc('assigned_employees', { _course_id: course.id });
+      const nextSet = new Set(((nextRpc || []) as { employee_id: string }[]).map(r => r.employee_id));
+
+      // 5. If the learner is STILL resolved (covered by DEPT/SUB/MGR/ALL),
+      //    write an exclusion row so the next sync doesn't re-enroll them.
+      //    Defensive: try the optional exclusions table; if it doesn't exist
+      //    yet the catch below logs a warning and we move on.
+      if (nextSet.has(employeeRowId)) {
+        try {
+          const { error: exErr } = await supabase
+            .from('course_assignment_exclusions')
+            .upsert({ course_id: course.id, employee_id: employeeRowId }, { onConflict: 'course_id,employee_id' });
+          if (exErr) throw exErr;
+        } catch (e) {
+          console.warn('[modules] could not persist exclusion (table may not exist yet):', (e as Error).message);
+          // Surface to the admin so they know to remove the covering scope:
+          setErr(`${displayName}'s data was wiped, but they remain covered by another scope (department / sub-dept / manager / All). Remove that scope too — otherwise the next sync will re-enroll them.`);
+        }
+      }
+
+      // 6. Refresh local state + notify analytics / user portal.
+      setResolvedAssignedSet(nextSet);
+      setAssignments(prev => prev.filter(a => !(a.employee_id === employeeRowId)));
+      window.dispatchEvent(new CustomEvent('course-assignments-changed', { detail: { courseId: course.id } }));
+    } catch (e) {
+      setErr((e as Error).message || 'Could not remove the learner.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const labelFor = (a: Assignment): string => {
     if (a.scope_all) return 'All employees';
     if (a.department_id) return `Department: ${departments.find(d => d.id === a.department_id)?.name ?? a.department_id}`;
@@ -425,6 +511,41 @@ function EditAssignmentModal({ course, onClose, onSaved }: { course: Course; onC
                     </div>
                   ))}
                 </div>
+              )}
+            </div>
+
+            {/* Per-learner removal — admin can yank a single user out of the
+                course regardless of which scope put them there. Hard cascade:
+                wipes their data + drops EMP scope + (when possible) writes
+                an exclusion row so the next sync doesn't re-enroll them. */}
+            <div style={{marginBottom:18}}>
+              <div className="eyebrow">CURRENTLY ENROLLED LEARNERS ({resolvedAssignedSet.size})</div>
+              {resolvedAssignedSet.size === 0 ? (
+                <div style={{marginTop:8, padding:12, fontSize:12, color:'#8A97A8', background:'#F7F9FC', borderRadius:8}}>No learners are enrolled yet. Add a scope above.</div>
+              ) : (
+                (() => {
+                  const enrolled = employeesAll.filter(e => resolvedAssignedSet.has(e.id));
+                  return (
+                    <div style={{marginTop:8, maxHeight:240, overflowY:'auto', border:'1px solid #EEF2F7', borderRadius:8, background:'#fff'}}>
+                      {enrolled.map((e, i) => (
+                        <div key={e.id} style={{padding:'8px 12px', display:'flex', alignItems:'center', gap:10, borderBottom: i === enrolled.length - 1 ? 'none' : '1px solid #F1F4F9'}}>
+                          <div style={{flex:1, minWidth:0}}>
+                            <div style={{fontSize:13, fontWeight:600, color:'#0A1F3D', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{e.name || e.email}</div>
+                            <div style={{fontSize:11, color:'#8A97A8', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{e.email}</div>
+                          </div>
+                          <button
+                            onClick={() => removeLearnerHard(e.id, e.name || e.email)}
+                            disabled={busy}
+                            title="Permanently remove this learner from the course"
+                            style={{padding:'4px 10px', background:'#fff', border:'1px solid #FCE1DE', borderRadius:6, fontSize:11, fontWeight:700, color:'#C2261D', cursor: busy ? 'not-allowed' : 'pointer'}}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()
               )}
             </div>
 

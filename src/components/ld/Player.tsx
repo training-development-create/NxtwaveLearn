@@ -3,7 +3,7 @@ import { useCourseLessons, saveLessonProgress, getVideoUrl, getReadingMaterialUr
 import { useAuth } from "./auth";
 import { supabase } from "@/integrations/supabase/client";
 import { Btn, Card, ProgressBar, Icon, EmptyState } from "./ui";
-import { fmt, fmtShortDate, UNLOCK_THRESHOLD } from "./data";
+import { fmt, UNLOCK_THRESHOLD } from "./data";
 import type { Nav, AppState } from "./App";
 
 const lessonRatio = (duration: number, watched: number, completed: boolean) => {
@@ -458,6 +458,23 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
         )}
 
 
+        {/* Knowledge document — sits above the video so the learner sees it
+            first. Slim strip, single line, no extra explanation. */}
+        {lesson.reading_material_path && (() => {
+          const url = getReadingMaterialUrl(lesson.reading_material_path);
+          if (!url) return null;
+          const label = lesson.reading_material_name || 'Knowledge document';
+          return (
+            <div style={{marginBottom:14}}>
+              <a href={url} target="_blank" rel="noreferrer" style={{textDecoration:'none', display:'flex', alignItems:'center', gap:10, padding:'10px 14px', background:'#FFF8EA', border:'1px solid #FCD79B', borderRadius:10}}>
+                <span style={{fontSize:16}}>📘</span>
+                <span style={{flex:1, minWidth:0, fontSize:13, fontWeight:600, color:'#0A1F3D', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{label}</span>
+                <span style={{fontSize:12, fontWeight:700, color:'#9A6708'}}>Open ↗</span>
+              </a>
+            </div>
+          );
+        })()}
+
         <div ref={frameRef} style={{position:'relative', background:'#0A1F3D', borderRadius:16, overflow:'hidden', aspectRatio:'16/9', boxShadow:'0 12px 32px rgba(0,42,75,.15)'}}>
           {videoSrc ? (
             <video
@@ -557,36 +574,14 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
           </div>
         </div>
 
-        {/* Optional reading material — surfaced prominently next to the video so
-            learners notice it. Supplementary, not gated by completion. */}
-        {lesson.reading_material_path && (() => {
-          const url = getReadingMaterialUrl(lesson.reading_material_path);
-          if (!url) return null;
-          const label = lesson.reading_material_name || 'Reading material';
-          return (
-            <div style={{marginTop:14}}>
-              <Card pad={16} style={{display:'flex', alignItems:'center', gap:14, background:'linear-gradient(90deg,#FFF8EA,#fff)', borderColor:'#FCD79B'}}>
-                <div style={{width:42, height:42, borderRadius:10, background:'#FFF1CC', color:'#9A6708', display:'grid', placeItems:'center', fontSize:20}}>📘</div>
-                <div style={{flex:1, minWidth:0}}>
-                  <div style={{fontSize:11, fontWeight:700, color:'#9A6708', letterSpacing:'.08em', textTransform:'uppercase'}}>Knowledge document</div>
-                  <div style={{fontSize:14, fontWeight:700, color:'#0A1F3D', marginTop:2}}>{label}</div>
-                  <div style={{fontSize:11, color:'#5B6A7D', marginTop:2}}>Open this alongside the video — it covers the same material in detail.</div>
-                </div>
-                <a href={url} target="_blank" rel="noreferrer" style={{textDecoration:'none'}}>
-                  <Btn variant="soft" size="sm">Open document ↗</Btn>
-                </a>
-              </Card>
-            </div>
-          );
-        })()}
       </div>
 
       <div style={{display:'flex', flexDirection:'column', gap:14}}>
-        {/* Right-rail order (per product spec):
+        {/* Right-rail order:
               1. "In this course" — video list + duration on top
               2. Step 2 — Assessment
               3. Step 3 — Agreement (when required)
-              4. Course timeline — published / due dates */}
+            Dates intentionally live on the Dashboard course card, not here. */}
         <Card pad={0}>
           <div style={{padding:'16px 18px', borderBottom:'1px solid #EEF2F7'}}>
             <div style={{fontSize:11, fontWeight:600, color:'#8A97A8', letterSpacing:'.06em', textTransform:'uppercase'}}>In this course</div>
@@ -679,49 +674,9 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
           );
         })()}
 
-        {/* Course timeline — published-on + complete-by. Both dates are
-            also rendered on the user portal home (Dashboard) and Admin
-            Analytics so learners and admins see identical numbers. */}
-        {(() => {
-          const publishedAt = course.published_at;
-          const dueDays = course.due_in_days;
-          const dueAtMs = (publishedAt && dueDays) ? Date.parse(publishedAt) + dueDays * 86400000 : null;
-          const dueAtIso = dueAtMs ? new Date(dueAtMs).toISOString() : null;
-          const remainingDays = dueAtMs ? Math.ceil((dueAtMs - Date.now()) / 86400000) : null;
-          const overdue = remainingDays !== null && remainingDays < 0;
-          const dueSoon = remainingDays !== null && remainingDays >= 0 && remainingDays <= 3;
-          const accent = overdue ? '#D92D20' : dueSoon ? '#9A6708' : '#0072FF';
-          const bg = overdue ? '#FEF3F2' : dueSoon ? '#FFF8EA' : '#F2F9FF';
-          const border = overdue ? '#FECDCA' : dueSoon ? '#FCD79B' : '#CCEAFF';
-          return (
-            <Card pad={16} style={{background:bg, borderColor:border}}>
-              <div style={{fontSize:11, fontWeight:700, color:accent, letterSpacing:'.08em', textTransform:'uppercase'}}>Course timeline</div>
-              <div style={{display:'flex', flexDirection:'column', gap:10, marginTop:10}}>
-                <div style={{display:'flex', justifyContent:'space-between', alignItems:'baseline', gap:8}}>
-                  <div style={{fontSize:11, color:'#5B6A7D'}}>Published on</div>
-                  <div style={{fontSize:13, fontWeight:700, color:'#0A1F3D'}}>{fmtShortDate(publishedAt)}</div>
-                </div>
-                <div style={{display:'flex', justifyContent:'space-between', alignItems:'baseline', gap:8}}>
-                  <div style={{fontSize:11, color:'#5B6A7D'}}>Complete by</div>
-                  <div style={{fontSize:13, fontWeight:700, color:accent}}>
-                    {fmtShortDate(dueAtIso)}
-                    {remainingDays !== null && (
-                      <span style={{marginLeft:6, fontSize:11, fontWeight:600}}>
-                        ({overdue ? `${Math.abs(remainingDays)}d overdue` : remainingDays === 0 ? 'today' : `${remainingDays}d left`})
-                      </span>
-                    )}
-                  </div>
-                </div>
-                {!publishedAt && (
-                  <div style={{fontSize:11, color:'#8A97A8'}}>Awaiting publish — admin will set the deadline.</div>
-                )}
-                {publishedAt && !dueDays && (
-                  <div style={{fontSize:11, color:'#8A97A8'}}>No deadline — admin hasn't set a due date.</div>
-                )}
-              </div>
-            </Card>
-          );
-        })()}
+        {/* Dates intentionally NOT rendered here — they live on the
+            Dashboard course card so the Player stays focused on the task
+            (watch → assess → sign). */}
       </div>
     </div>
   );
