@@ -495,104 +495,98 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
           );
         })()}
 
-        <div ref={frameRef} style={{position:'relative', background:'#0A1F3D', borderRadius:16, overflow:'hidden', aspectRatio:'16/9', boxShadow:'0 12px 32px rgba(0,42,75,.15)'}}>
-          {videoSrc ? (
-            <video
-              ref={videoRef}
-              src={videoSrc}
-              onTimeUpdate={onTimeUpdate}
-              onPlay={() => setPaused(false)}
-              onPause={() => { setPaused(true); flushProgress(); }}
-              onEnded={() => {
-                // Snap to full duration so floating-point drift in
-                // currentTime (e.g. 99.7s on a 100s video) doesn't keep
-                // the assessment locked. Mark completed locally, persist,
-                // and refetch so the unlock state updates without a
-                // manual page refresh.
-                if (DUR > 0) {
-                  furthestRef.current = DUR;
-                  setFurthest(DUR);
-                  setT(DUR);
-                }
-                completedRef.current = true;
-                if (user && lesson) {
-                  saveLessonProgress(user.id, lesson.id, DUR || furthestRef.current, true)
-                    .then(() => reload())
-                    .catch(() => reload());
-                }
-              }}
-              onSeeking={enforceNoForwardSeek}
-              onSeeked={() => { enforceNoForwardSeek(); flushProgress(); }}
-              onClick={togglePlay}
-              onContextMenu={(e) => e.preventDefault()}
-              controls={false}
-              controlsList="nodownload noplaybackrate noremoteplayback"
-              disablePictureInPicture
-              disableRemotePlayback
-              playsInline
-              style={{width:'100%', height:'100%', background:'#000', objectFit:'contain', cursor:'pointer'}}
-            />
-          ) : (
-            <div style={{position:'absolute', inset:0, display:'grid', placeItems:'center', color:'#fff', fontSize:13}}>Loading video…</div>
-          )}
+        {/* Video player — only rendered when the lesson has a video.
+            Assessment-only lessons skip this block entirely. */}
+        {hasVideo && (
+          <div ref={frameRef} style={{position:'relative', background:'#0A1F3D', borderRadius:16, overflow:'hidden', aspectRatio:'16/9', boxShadow:'0 12px 32px rgba(0,42,75,.15)'}}>
+            {videoSrc ? (
+              <video
+                ref={videoRef}
+                src={videoSrc}
+                onTimeUpdate={onTimeUpdate}
+                onPlay={() => setPaused(false)}
+                onPause={() => { setPaused(true); flushProgress(); }}
+                onEnded={() => {
+                  if (DUR > 0) {
+                    furthestRef.current = DUR;
+                    setFurthest(DUR);
+                    setT(DUR);
+                  }
+                  completedRef.current = true;
+                  if (user && lesson) {
+                    saveLessonProgress(user.id, lesson.id, DUR || furthestRef.current, true)
+                      .then(() => reload())
+                      .catch(() => reload());
+                  }
+                }}
+                onSeeking={enforceNoForwardSeek}
+                onSeeked={() => { enforceNoForwardSeek(); flushProgress(); }}
+                onClick={togglePlay}
+                onContextMenu={(e) => e.preventDefault()}
+                controls={false}
+                controlsList="nodownload noplaybackrate noremoteplayback"
+                disablePictureInPicture
+                disableRemotePlayback
+                playsInline
+                style={{width:'100%', height:'100%', background:'#000', objectFit:'contain', cursor:'pointer'}}
+              />
+            ) : (
+              <div style={{position:'absolute', inset:0, display:'grid', placeItems:'center', color:'#fff', fontSize:13}}>Loading video…</div>
+            )}
 
-          <div style={{position:'absolute', top:12, right:12, display:'flex', alignItems:'center', gap:8}}>
-            <div style={{display:'flex', alignItems:'center', gap:8, padding:'5px 12px', background:'rgba(0,0,0,.55)', backdropFilter:'blur(8px)', borderRadius:999, color:'#fff', fontSize:11, fontWeight:600}}>
-              <span style={{width:7, height:7, background:'#22D38A', borderRadius:99, boxShadow:'0 0 0 4px rgba(34,211,138,.18)'}}/> {Math.round(watchedPct)}% watched
-            </div>
-            <button onClick={toggleFullscreen} title="Fullscreen" style={{padding:'6px 10px', background:'rgba(0,0,0,.55)', backdropFilter:'blur(8px)', border:0, borderRadius:999, color:'#fff', fontSize:11, fontWeight:700, cursor:'pointer', display:'flex', alignItems:'center', gap:6}}>
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M3 9V3h6M21 9V3h-6M3 15v6h6M21 15v6h-6"/></svg>
-              Fullscreen
-            </button>
-          </div>
-
-          {showNote && (
-            <div style={{position:'absolute', top:16, left:'50%', transform:'translateX(-50%)', padding:'9px 14px', background:'rgba(194,38,29,.95)', color:'#fff', borderRadius:8, fontSize:12, fontWeight:600}}>{showNote}</div>
-          )}
-
-          {/* Custom controls (no scrubbing forward, no speed switch, no volume control) */}
-          <div style={{position:'absolute', left:0, right:0, bottom:0, padding:'10px 12px', background:'linear-gradient(to top, rgba(0,0,0,.65), rgba(0,0,0,0))'}}>
-            <div style={{display:'flex', alignItems:'center', gap:10}}>
-              <button onClick={togglePlay} style={{width:36, height:36, borderRadius:12, border:'1px solid rgba(255,255,255,.14)', background:'rgba(0,0,0,.45)', color:'#fff', cursor:'pointer', fontWeight:800}}>
-                {paused ? '▶' : '⏸'}
+            <div style={{position:'absolute', top:12, right:12, display:'flex', alignItems:'center', gap:8}}>
+              <div style={{display:'flex', alignItems:'center', gap:8, padding:'5px 12px', background:'rgba(0,0,0,.55)', backdropFilter:'blur(8px)', borderRadius:999, color:'#fff', fontSize:11, fontWeight:600}}>
+                <span style={{width:7, height:7, background:'#22D38A', borderRadius:99, boxShadow:'0 0 0 4px rgba(34,211,138,.18)'}}/> {Math.round(watchedPct)}% watched
+              </div>
+              <button onClick={toggleFullscreen} title="Fullscreen" style={{padding:'6px 10px', background:'rgba(0,0,0,.55)', backdropFilter:'blur(8px)', border:0, borderRadius:999, color:'#fff', fontSize:11, fontWeight:700, cursor:'pointer', display:'flex', alignItems:'center', gap:6}}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M3 9V3h6M21 9V3h-6M3 15v6h6M21 15v6h-6"/></svg>
+                Fullscreen
               </button>
-              <div style={{minWidth:96, fontSize:12, color:'rgba(255,255,255,.9)', fontWeight:700}}>
-                {fmt(t)} / {fmt(DUR)}
-              </div>
-              <div style={{flex:1, position:'relative', height:24, display:'flex', alignItems:'center'}}>
-                {/* Track background */}
-                <div style={{position:'absolute', left:0, right:0, height:4, background:'rgba(255,255,255,.18)', borderRadius:99}}/>
-                {/* Watched (rewindable) region */}
-                <div style={{position:'absolute', left:0, width: DUR ? `${Math.min(100, (furthest / DUR) * 100)}%` : '0%', height:4, background:'rgba(34,211,138,.85)', borderRadius:99}}/>
-                {/* Current position marker */}
-                <div style={{position:'absolute', left: DUR ? `${Math.min(100, (t / DUR) * 100)}%` : '0%', width:12, height:12, marginLeft:-6, background:'#fff', borderRadius:99, boxShadow:'0 0 0 2px rgba(0,114,255,.6)'}}/>
-                <input
-                  type="range"
-                  min={0}
-                  max={Math.max(1, DUR)}
-                  step={0.1}
-                  value={Math.min(t, DUR)}
-                  onChange={(e) => {
-                    const v = videoRef.current; if (!v) return;
-                    const target = Number(e.target.value);
-                    // Allow backward seek only; clamp forward attempts to furthest watched.
-                    if (target > furthestRef.current + 0.35) {
-                      v.currentTime = furthestRef.current;
-                      setT(furthestRef.current);
-                      setShowNote('Skipping ahead is disabled — keep watching.');
-                      setTimeout(() => setShowNote(null), 1600);
-                      return;
-                    }
-                    v.currentTime = target;
-                    setT(target);
-                  }}
-                  title="Rewind only — you cannot skip ahead"
-                  style={{position:'absolute', left:0, right:0, width:'100%', height:24, opacity:0, cursor:'pointer', margin:0}}
-                />
+            </div>
+
+            {showNote && (
+              <div style={{position:'absolute', top:16, left:'50%', transform:'translateX(-50%)', padding:'9px 14px', background:'rgba(194,38,29,.95)', color:'#fff', borderRadius:8, fontSize:12, fontWeight:600}}>{showNote}</div>
+            )}
+
+            <div style={{position:'absolute', left:0, right:0, bottom:0, padding:'10px 12px', background:'linear-gradient(to top, rgba(0,0,0,.65), rgba(0,0,0,0))'}}>
+              <div style={{display:'flex', alignItems:'center', gap:10}}>
+                <button onClick={togglePlay} style={{width:36, height:36, borderRadius:12, border:'1px solid rgba(255,255,255,.14)', background:'rgba(0,0,0,.45)', color:'#fff', cursor:'pointer', fontWeight:800}}>
+                  {paused ? '▶' : '⏸'}
+                </button>
+                <div style={{minWidth:96, fontSize:12, color:'rgba(255,255,255,.9)', fontWeight:700}}>
+                  {fmt(t)} / {fmt(DUR)}
+                </div>
+                <div style={{flex:1, position:'relative', height:24, display:'flex', alignItems:'center'}}>
+                  <div style={{position:'absolute', left:0, right:0, height:4, background:'rgba(255,255,255,.18)', borderRadius:99}}/>
+                  <div style={{position:'absolute', left:0, width: DUR ? `${Math.min(100, (furthest / DUR) * 100)}%` : '0%', height:4, background:'rgba(34,211,138,.85)', borderRadius:99}}/>
+                  <div style={{position:'absolute', left: DUR ? `${Math.min(100, (t / DUR) * 100)}%` : '0%', width:12, height:12, marginLeft:-6, background:'#fff', borderRadius:99, boxShadow:'0 0 0 2px rgba(0,114,255,.6)'}}/>
+                  <input
+                    type="range"
+                    min={0}
+                    max={Math.max(1, DUR)}
+                    step={0.1}
+                    value={Math.min(t, DUR)}
+                    onChange={(e) => {
+                      const v = videoRef.current; if (!v) return;
+                      const target = Number(e.target.value);
+                      if (target > furthestRef.current + 0.35) {
+                        v.currentTime = furthestRef.current;
+                        setT(furthestRef.current);
+                        setShowNote('Skipping ahead is disabled — keep watching.');
+                        setTimeout(() => setShowNote(null), 1600);
+                        return;
+                      }
+                      v.currentTime = target;
+                      setT(target);
+                    }}
+                    title="Rewind only — you cannot skip ahead"
+                    style={{position:'absolute', left:0, right:0, width:'100%', height:24, opacity:0, cursor:'pointer', margin:0}}
+                  />
+                </div>
               </div>
             </div>
           </div>
-        </div>
+        )}
 
       </div>
 
