@@ -143,8 +143,8 @@ async function fetchDarwinRecords(apiKey: string, datasetKey: string): Promise<D
 
   // Retry with backoff + per-attempt timeout. Darwinbox can be slow or flaky;
   // a single transient failure used to surface as a hard 500 on the whole sync.
-  const MAX_ATTEMPTS = 3;
-  const TIMEOUT_MS = 45_000;
+  const MAX_ATTEMPTS = 2;
+  const TIMEOUT_MS = 25_000;
   let lastErr: unknown = null;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -672,19 +672,22 @@ Deno.serve(async (req) => {
   }
 
   // -----------------------------------------------------------------------
-  // STEP 9: Re-enroll new hires (employees first seen in this sync run).
-  // The DB trigger handles most cases, but explicit refresh guarantees
-  // scope-based rules (dept/manager assignments) are applied immediately.
+  // STEP 9: Materialize enrollments for scope-based (dept/sub-dept/manager)
+  // assignments — refresh PER COURSE, not per employee.
+  //
+  // refresh_enrollments_for_course() enrolls EVERY assigned active employee in
+  // a single statement, so new hires get their department/manager courses with
+  // O(courses) RPC calls (a handful) instead of O(employees) (thousands,
+  // sequential) — the old per-employee loop was a primary cause of the
+  // execution-time blow-up / EarlyDrop. The on_employee_change trigger already
+  // covers most cases; this just guarantees scope rules are applied.
   // -----------------------------------------------------------------------
-  const { data: newHires } = await sb
-    .from("employees")
-    .select("id")
-    .eq("status", "active")
-    .not("auth_user_id", "is", null)
-    .gte("last_synced_at", syncStart);
-
-  for (const e of newHires ?? []) {
-    await sb.rpc("refresh_enrollments_for_employee", { _employee_id: e.id });
+  const { data: courseIdRows } = await sb.from("courses").select("id");
+  let coursesRefreshed = 0;
+  for (const c of courseIdRows ?? []) {
+    const { error: refErr } = await sb.rpc("refresh_enrollments_for_course", { _course_id: c.id });
+    if (refErr) console.warn(`[sync] refresh_enrollments_for_course failed for ${c.id}: ${refErr.message}`);
+    else coursesRefreshed++;
   }
 
   return jsonResponse(200, {
@@ -697,7 +700,7 @@ Deno.serve(async (req) => {
     roles_synced: roleRows.length,
     manager_links: managerPatches.length,
     manager_links_unresolved: unresolvedManagerCount,
-    new_hires_enrolled: (newHires ?? []).length,
+    courses_refreshed: coursesRefreshed,
     extended_columns_written: !usedMinimalFallback,
     exit_guard_skipped: exitResult.skipped,
     exit_guard_reason: exitResult.reason,
