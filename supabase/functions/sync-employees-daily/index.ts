@@ -192,6 +192,45 @@ Deno.serve(async (req) => {
   const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
 
   // -----------------------------------------------------------------------
+  // SAFETY GUARD against mass false-exit.
+  // mark_exited_employees() flips EVERY active employee not seen this run to
+  // 'exited' (which revokes their enrollments). A truncated/empty Darwinbox
+  // response would therefore wipe the whole roster. safeMarkExited refuses to
+  // run the exit step when this run looks suspiciously small:
+  //   • fewer than ABS_FLOOR active rows  → almost certainly a bad response
+  //   • or under DROP_RATIO of the currently-active roster → big unexplained drop
+  // When skipped, employees keep their access; the next healthy sync corrects
+  // any real exits. Learning progress is never touched either way.
+  // -----------------------------------------------------------------------
+  const ABS_FLOOR = 25;
+  const DROP_RATIO = 0.5;
+  const safeMarkExited = async (activeThisRun: number): Promise<{
+    exited: number; emails: string[]; skipped: boolean; reason: string | null;
+  }> => {
+    const { count } = await sb.from("employees")
+      .select("id", { count: "exact", head: true }).eq("status", "active");
+    const activeBefore = count ?? 0;
+    if (activeThisRun < ABS_FLOOR) {
+      const reason = `run returned only ${activeThisRun} active employees (< floor ${ABS_FLOOR}) — skipping exit-marking to avoid mass false-exit`;
+      console.warn(`[sync] EXIT GUARD: ${reason}`);
+      return { exited: 0, emails: [], skipped: true, reason };
+    }
+    if (activeBefore > 0 && activeThisRun < activeBefore * DROP_RATIO) {
+      const reason = `run returned ${activeThisRun} active employees vs ${activeBefore} currently active (drop > ${Math.round((1 - DROP_RATIO) * 100)}%) — skipping exit-marking`;
+      console.warn(`[sync] EXIT GUARD: ${reason}`);
+      return { exited: 0, emails: [], skipped: true, reason };
+    }
+    const { data, error } = await sb.rpc("mark_exited_employees", { _synced_before: syncStart });
+    if (error) {
+      console.warn("[sync] mark_exited_employees failed:", error.message);
+      return { exited: 0, emails: [], skipped: false, reason: error.message };
+    }
+    const exited = (data as { exited_count: number }[] | null)?.[0]?.exited_count ?? 0;
+    const emails = (data as { exited_emails: string[] }[] | null)?.[0]?.exited_emails ?? [];
+    return { exited, emails, skipped: false, reason: null };
+  };
+
+  // -----------------------------------------------------------------------
   // STEP 0: Record sync start time BEFORE fetching from Darwinbox.
   // Any employee whose last_synced_at is older than syncStart at the END
   // of this run was not returned by Darwinbox → they have left the org.
@@ -206,10 +245,13 @@ Deno.serve(async (req) => {
   }
 
   if (!records.length) {
-    // Even with no active records, still mark exited (rare edge case).
-    const { data: exitData } = await sb.rpc("mark_exited_employees", { _synced_before: syncStart });
-    const exited = (exitData as { exited_count: number }[] | null)?.[0]?.exited_count ?? 0;
-    return jsonResponse(200, { ok: true, imported: 0, exited, message: "No records returned from Darwinbox" });
+    // Empty response = bad/transient Darwinbox fetch. NEVER mark exits here —
+    // doing so would flip the entire roster to 'exited'. Just no-op safely.
+    console.warn("[sync] Darwinbox returned 0 records — skipping exit-marking entirely.");
+    return jsonResponse(200, {
+      ok: true, imported: 0, exited: 0, exit_guard_skipped: true,
+      message: "No records returned from Darwinbox — exit-marking skipped to protect data",
+    });
   }
 
   // -----------------------------------------------------------------------
@@ -292,9 +334,18 @@ Deno.serve(async (req) => {
   console.log(`[sync] sample record keys: ${JSON.stringify(sampleKeys.slice(0, 60))}`);
 
   if (!upserts.length) {
-    const { data: exitData } = await sb.rpc("mark_exited_employees", { _synced_before: syncStart });
-    const exited = (exitData as { exited_count: number }[] | null)?.[0]?.exited_count ?? 0;
-    return jsonResponse(200, { ok: true, imported: 0, exited, message: "No mappable active-email rows" });
+    // No active employees mapped this run — same risk as an empty response.
+    // Never mark exits from a zero-active run.
+    console.warn("[sync] 0 mappable active employees — skipping exit-marking entirely.");
+    return jsonResponse(200, {
+      ok: true, imported: 0, exited: 0, exit_guard_skipped: true,
+      message: "No mappable active-email rows — exit-marking skipped to protect data",
+      diagnostics: {
+        status_values_seen: Array.from(statusValuesSeen).slice(0, 20),
+        exited_in_payload_skipped: exitedInPayloadSkipped,
+        sample_record_keys: sampleKeys.slice(0, 60),
+      },
+    });
   }
 
   // -----------------------------------------------------------------------
@@ -328,20 +379,16 @@ Deno.serve(async (req) => {
   }
 
   // -----------------------------------------------------------------------
-  // STEP 3: Mark exited employees.
+  // STEP 3: Mark exited employees — through the safety guard.
   // The DB function finds employees whose last_synced_at < syncStart
   // (i.e., Darwinbox did not return them this run) and sets status='exited'.
   // A DB trigger then revokes their active enrollments automatically.
   // Learning progress (lesson_progress, quiz_attempts) is NEVER deleted.
+  // safeMarkExited refuses to run when this run looks suspiciously small.
   // -----------------------------------------------------------------------
-  const { data: exitData, error: exitErr } = await sb
-    .rpc("mark_exited_employees", { _synced_before: syncStart });
-  const exitedCount = (exitData as { exited_count: number }[] | null)?.[0]?.exited_count ?? 0;
-  const exitedEmails = (exitData as { exited_emails: string[] }[] | null)?.[0]?.exited_emails ?? [];
-  if (exitErr) {
-    // Non-fatal — log and continue.
-    console.warn("[sync] mark_exited_employees failed:", exitErr.message);
-  }
+  const exitResult = await safeMarkExited(upserts.length);
+  const exitedCount = exitResult.exited;
+  const exitedEmails = exitResult.emails;
 
   // -----------------------------------------------------------------------
   // STEP 4: Sync org hierarchy (departments → sub-departments).
@@ -621,6 +668,8 @@ Deno.serve(async (req) => {
     manager_links_unresolved: unresolvedManagerCount,
     new_hires_enrolled: (newHires ?? []).length,
     extended_columns_written: !usedMinimalFallback,
+    exit_guard_skipped: exitResult.skipped,
+    exit_guard_reason: exitResult.reason,
     // ---- Diagnostics: use these to confirm your tenant's real field shape ----
     diagnostics: {
       status_values_seen: Array.from(statusValuesSeen).slice(0, 20),
