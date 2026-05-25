@@ -14,6 +14,47 @@ export type Database = {
   }
   public: {
     Tables: {
+      agreement_signatures: {
+        Row: {
+          agreement_pdf_path: string | null
+          course_id: string
+          id: string
+          signed_at: string
+          signed_full_name: string | null
+          signed_text: string | null
+          user_agent: string | null
+          user_id: string
+        }
+        Insert: {
+          agreement_pdf_path?: string | null
+          course_id: string
+          id?: string
+          signed_at?: string
+          signed_full_name?: string | null
+          signed_text?: string | null
+          user_agent?: string | null
+          user_id: string
+        }
+        Update: {
+          agreement_pdf_path?: string | null
+          course_id?: string
+          id?: string
+          signed_at?: string
+          signed_full_name?: string | null
+          signed_text?: string | null
+          user_agent?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agreement_signatures_course_id_fkey"
+            columns: ["course_id"]
+            isOneToOne: false
+            referencedRelation: "courses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       courses: {
         Row: {
           blurb: string

@@ -23,6 +23,18 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
   const [answers, setAnswers] = useState<(number|null)[]>([]);
   const [flagged, setFlagged] = useState<Set<number>>(new Set());
   const [submitting, setSubmitting] = useState(false);
+  // When non-null, quiz runs in "retake" mode — only the wrong question
+  // indices are shown. Correct answers from the previous attempt are kept
+  // intact in `answers` so scoring still uses the full array.
+  const [retakeIndices, setRetakeIndices] = useState<number[] | null>(null);
+
+  // Safety guard: if retakeIndices is set (we're in a retake) but somehow
+  // stage is 'intro' (e.g. stale localStorage), jump straight to quiz.
+  useEffect(() => {
+    if (retakeIndices !== null && stage === 'intro') {
+      setStage('quiz');
+    }
+  }, [retakeIndices, stage]);
 
   // Persistence — quiz state survives tab refresh / tab switch.
   // Key per (user, lesson). Cleared on submit so a retake starts fresh.
@@ -33,11 +45,12 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
     try {
       const raw = localStorage.getItem(persistKey);
       if (raw) {
-        const saved = JSON.parse(raw) as { stage?: typeof stage; idx?: number; answers?: (number|null)[]; flagged?: number[] };
+        const saved = JSON.parse(raw) as { stage?: typeof stage; idx?: number; answers?: (number|null)[]; flagged?: number[]; retakeIndices?: number[] | null };
         if (saved.stage) setStage(saved.stage);
         if (typeof saved.idx === 'number') setIdx(saved.idx);
         if (Array.isArray(saved.answers)) setAnswers(saved.answers);
         if (Array.isArray(saved.flagged)) setFlagged(new Set(saved.flagged));
+        if ('retakeIndices' in saved) setRetakeIndices(saved.retakeIndices ?? null);
       }
     } catch { /* ignore corrupt state */ }
     // CRITICAL: must always flip the gate so the save effect starts firing
@@ -53,17 +66,25 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
     if (!persistKey || !restoredRef.current) return;
     const t = setTimeout(() => {
       try {
-        localStorage.setItem(persistKey, JSON.stringify({ stage, idx, answers, flagged: Array.from(flagged) }));
+        localStorage.setItem(persistKey, JSON.stringify({ stage, idx, answers, flagged: Array.from(flagged), retakeIndices }));
       } catch { /* quota or serialisation failure — ignore */ }
     }, 200);
     return () => clearTimeout(t);
-  }, [persistKey, stage, idx, answers, flagged]);
+  }, [persistKey, stage, idx, answers, flagged, retakeIndices]);
 
-  // The active question list — always the full quiz now. (Previously the
-  // quiz supported a "retake wrong only" mode; the rule changed: any wrong
-  // answer means the learner restarts the entire quiz.)
+  // The active question list. In retake mode only the wrong questions are
+  // shown; in a fresh attempt every question is included. We defensively clamp
+  // retake indices to the current question set so a restored localStorage state
+  // (or an admin editing the quiz mid-retake) can never index past the array
+  // and crash the renderer. If every retake index is stale we fall back to the
+  // full list rather than showing an empty quiz.
+  const safeRetakeIndices = retakeIndices === null
+    ? null
+    : retakeIndices.filter(i => Number.isInteger(i) && i >= 0 && i < questions.length);
   const activeList: { question: typeof questions[number]; originalIdx: number }[] =
-    questions.map((q, i) => ({ question: q, originalIdx: i }));
+    safeRetakeIndices !== null && safeRetakeIndices.length > 0
+      ? safeRetakeIndices.map(i => ({ question: questions[i], originalIdx: i }))
+      : questions.map((q, i) => ({ question: q, originalIdx: i }));
 
   useEffect(() => {
     if (!questions.length) return;
@@ -102,7 +123,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
             <div style={{position:'relative'}}>
               <div style={{fontSize:11, fontWeight:600, letterSpacing:'.12em', color:'#7FDBFF', textTransform:'uppercase'}}>Assessment · {course.title}</div>
               <h2 style={{fontSize:30, color:'#fff', margin:'10px 0 8px', letterSpacing:'-.02em', fontWeight:700}}>{lesson.title}</h2>
-              <p style={{color:'#9EC9F0', fontSize:14, margin:0, lineHeight:1.55, maxWidth:540}}>Answer {questions.length} questions. <strong style={{color:'#fff'}}>Every answer must be correct (100%) to pass.</strong> Even one wrong answer means you must restart the full assessment from the beginning.</p>
+              <p style={{color:'#9EC9F0', fontSize:14, margin:0, lineHeight:1.55, maxWidth:540}}>Answer {questions.length} questions. <strong style={{color:'#fff'}}>Every answer must be correct (100%) to pass.</strong> Any wrong answers can be re-attempted without restarting the whole quiz.</p>
             </div>
           </div>
           <div style={{padding:'24px 40px', display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:20, borderBottom:'1px solid #EEF2F7'}}>
@@ -115,7 +136,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
           </div>
           <div style={{padding:'22px 40px 28px'}}>
             <ul style={{margin:0, padding:0, listStyle:'none', display:'flex', flexDirection:'column', gap:8, fontSize:13, color:'#3B4A5E'}}>
-              {['You can flag questions and come back','Navigate freely between questions','Results are shared with your Compliance admin','Even one wrong answer means you must restart the entire assessment from the beginning','You must answer every question correctly to pass'].map(s => (
+              {['You can flag questions and come back','Navigate freely between questions','Results are shared with your Compliance admin','Wrong answers can be re-attempted without restarting the full quiz','You must answer every question correctly to pass'].map(s => (
                 <li key={s} style={{display:'flex', gap:10}}><span style={{color:'#17A674'}}>✓</span>{s}</li>
               ))}
             </ul>
@@ -166,10 +187,16 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
     const wrongIndices = answers
       .map((a, i) => (a === questions[i].correct ? -1 : i))
       .filter(i => i !== -1);
-    const onRetryAll = () => {
-      // Restart the entire quiz from scratch — even one wrong answer means
-      // the learner re-attempts every question.
-      setAnswers(Array(questions.length).fill(null));
+    const onRetryWrong = () => {
+      // Enter retake mode — only the wrong questions are presented.
+      // Previously correct answers are kept in the `answers` array so the
+      // final score still counts them when the learner submits the retake.
+      setRetakeIndices(wrongIndices);
+      setAnswers(prev => {
+        const a = [...prev];
+        wrongIndices.forEach(i => { a[i] = null; });
+        return a;
+      });
       setIdx(0);
       setFlagged(new Set());
       setStage('quiz');
@@ -183,7 +210,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
               <div style={{width:52, height:52, borderRadius:14, background:'rgba(255,255,255,.14)', display:'grid', placeItems:'center', fontSize:24}}>{pass ? '✓' : '!'}</div>
               <div style={{fontSize:11, fontWeight:600, letterSpacing:'.12em', color:pass?'#D9F4E6':'#7FDBFF', marginTop:18, textTransform:'uppercase'}}>{pass?'Passed':'Not yet passed'}</div>
               <div style={{fontSize:48, fontWeight:700, letterSpacing:'-.03em', marginTop:4, lineHeight:1}}>{pct}%</div>
-              <div style={{fontSize:13, color:pass?'#D9F4E6':'#C8DDF4', marginTop:6}}>{correct} of {questions.length} correct · {pass ? (nextLesson ? 'Next video unlocked' : 'Course complete') : `${wrongIndices.length} wrong — restart the full assessment to try again`}</div>
+              <div style={{fontSize:13, color:pass?'#D9F4E6':'#C8DDF4', marginTop:6}}>{correct} of {questions.length} correct · {pass ? (nextLesson ? 'Next video unlocked' : 'Course complete') : `${wrongIndices.length} wrong — re-attempt just those questions`}</div>
             </div>
             <div style={{padding:'30px 40px 32px'}}>
               {/* Show only the final result + score; correct answers are intentionally
@@ -205,12 +232,12 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
               <div style={{marginTop:18, fontSize:12, color:'#5B6A7D'}}>
                 {pass
                   ? 'Great work — your completion is recorded.'
-                  : `You answered ${wrongIndices.length} question${wrongIndices.length === 1 ? '' : 's'} incorrectly. Review them below, then restart the entire assessment from the beginning — every question must be correct to pass.`}
+                  : `You answered ${wrongIndices.length} question${wrongIndices.length === 1 ? '' : 's'} incorrectly. Review them below, then re-attempt just those questions — every question must be correct to pass.`}
               </div>
               {!pass && wrongIndices.length > 0 && (
                 <div style={{marginTop:22, padding:'18px 20px', background:'#FFF7F6', border:'1px solid #FCE1DE', borderRadius:10}}>
                   <div style={{fontSize:11, fontWeight:700, color:'#C2261D', letterSpacing:'.08em', textTransform:'uppercase', marginBottom:10}}>
-                    Review · {wrongIndices.length} incorrect answer{wrongIndices.length === 1 ? '' : 's'}
+                    To re-attempt · {wrongIndices.length} incorrect answer{wrongIndices.length === 1 ? '' : 's'}
                   </div>
                   <div style={{display:'flex', flexDirection:'column', gap:10}}>
                     {wrongIndices.map(i => {
@@ -236,7 +263,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
                     ? <Btn size="lg" onClick={() => setStage('agreement')}>Continue to agreement ✍️ →</Btn>
                     : <Btn size="lg" onClick={onNext}>{nextLesson ? 'Start next video →' : 'Back to courses →'}</Btn>
                 ) : (
-                  <Btn size="lg" onClick={onRetryAll}>Restart full assessment →</Btn>
+                  <Btn size="lg" onClick={onRetryWrong}>Re-attempt wrong questions →</Btn>
                 )}
                 <Btn variant="ghost" size="lg" onClick={()=>onNav('courses')}>Back to courses</Btn>
               </div>
@@ -249,7 +276,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
               <div style={{fontSize:13, color:'#3B4A5E', lineHeight:1.6}}>
                 {pass
                   ? <>Your score has been recorded. {nextLesson ? <>The next video — <b>{nextLesson.title}</b> — is now unlocked.</> : <>You've completed every video in this course.</>}</>
-                  : <>Rewatch the video, then try again.</>}
+                  : <>Re-attempt the {wrongIndices.length} wrong question{wrongIndices.length === 1 ? '' : 's'} to pass. Your correct answers are already saved — only the wrong ones will be shown.</>}
               </div>
             </Card>
             <Card pad={22}>
@@ -285,31 +312,32 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
     const pass = pct === 100;
     await recordAttempt(user.id, lesson.id, answers as number[], correct, questions.length, pass);
     if (pass) {
-      // Compliance gate: if the course requires an agreement and the learner
-      // hasn't signed yet, the lesson is NOT yet completed. The agreement
-      // signing flow will mark completion. This prevents agreement-required
-      // courses from showing "completed" until signing is done.
-      const needsSignature = !!course?.agreement_required && !!course?.agreement_pdf_path && !hasSignedAgreement;
-      if (!needsSignature) {
-        await saveLessonProgress(user.id, lesson.id, lesson.duration, true);
-      } else {
-        // Record the watch progress but leave completed=false until signing.
-        await saveLessonProgress(user.id, lesson.id, lesson.duration, false);
-      }
+      // Passing the quiz completes the lesson at the COMPONENT level (video was
+      // already watched to unlock the quiz; this passing attempt satisfies the
+      // quiz component). The agreement, when required, is a COURSE-level gate
+      // handled separately by the course-completion calc and the agreement step
+      // below — it must not hold this lesson's own completion hostage.
+      await saveLessonProgress(user.id, lesson.id, lesson.duration, true);
     }
     setSubmitting(false);
     setStage('result');
-    // After a passing submit, clear persisted quiz state — there's nothing
-    // useful to restore once results are shown. Failed attempts keep the
-    // stored answers so the learner can review wrong answers after a refresh.
-    if (pass && persistKey) { try { localStorage.removeItem(persistKey); } catch { /* ignore */ } }
+    // After a passing submit, clear retake mode + persisted quiz state — there's
+    // nothing useful to restore once the learner has passed. Failed attempts
+    // keep the stored answers so the learner can review wrong answers after a
+    // refresh and resume the retake of just those questions.
+    if (pass) {
+      setRetakeIndices(null); // reset retake mode for the next lesson
+      if (persistKey) {
+        try { localStorage.removeItem(persistKey); } catch { /* ignore */ }
+      }
+    }
   };
 
   return (
     <div style={{padding:'24px 40px 48px', maxWidth:1180, animation:'fadeUp .3s'}}>
       <div style={{display:'flex', alignItems:'center', gap:16, marginBottom:20}}>
         <div>
-          <div style={{fontSize:11, fontWeight:600, color:'#8A97A8', letterSpacing:'.06em', textTransform:'uppercase'}}>Assessment · Video {lessonIdx+1} of {lessons.length}</div>
+          <div style={{fontSize:11, fontWeight:600, color:'#8A97A8', letterSpacing:'.06em', textTransform:'uppercase'}}>{retakeIndices !== null ? `Retake · ${retakeIndices.length} wrong question${retakeIndices.length === 1 ? '' : 's'}` : `Assessment · Video ${lessonIdx+1} of ${lessons.length}`}</div>
           <h2 style={{fontSize:22, color:'#0A1F3D', margin:'4px 0 0', letterSpacing:'-.02em', fontWeight:700}}>{lesson.title}</h2>
         </div>
         <div style={{marginLeft:'auto', display:'flex', gap:10, alignItems:'center'}}>

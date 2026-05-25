@@ -26,6 +26,10 @@ export type Lesson = {
   position: number;
   video_url: string | null;
   video_path: string | null;
+  // Whether this lesson has at least one MCQ question attached. Drives the
+  // component-aware completion gate: a lesson with no quiz must not require a
+  // passing attempt to be considered done.
+  has_quiz: boolean;
   // Optional reading material — not gated, purely supplementary.
   reading_material_path: string | null;
   reading_material_name: string | null;
@@ -74,5 +78,31 @@ export const fmtShortDate = (iso: string | null | undefined): string => {
 // Pass threshold (100% of video runtime) to unlock the assessment.
 // Compliance requires the learner to watch the full video before they can attempt the assessment.
 export const UNLOCK_THRESHOLD = 1.0;
+
+// A lesson "has a video" iff it has a non-zero runtime. The upload flow sets
+// duration_seconds=0 exactly when no video file was attached (Player handles
+// DUR=0 gracefully), so runtime is a reliable, query-cheap proxy for video
+// presence everywhere — no need to fetch video_path in every analytics query.
+export const lessonHasVideo = (durationSeconds: number | null | undefined): boolean =>
+  (durationSeconds ?? 0) > 0;
+
+// Component-aware lesson completion. A lesson counts as done only when EVERY
+// component it actually has is satisfied:
+//   • video → watched to (UNLOCK_THRESHOLD × runtime)
+//   • quiz  → at least one passing attempt (100%)
+// Components the lesson lacks are treated as already-satisfied. E-sign is a
+// course-level gate applied separately, not part of per-lesson completion.
+export function isLessonComplete(opts: {
+  hasVideo: boolean;
+  hasQuiz: boolean;
+  watchedSeconds: number;
+  durationSeconds: number;
+  quizPassed: boolean;
+}): boolean {
+  const videoOk = !opts.hasVideo
+    || (opts.durationSeconds > 0 ? opts.watchedSeconds >= opts.durationSeconds * UNLOCK_THRESHOLD : true);
+  const quizOk = !opts.hasQuiz || opts.quizPassed;
+  return videoOk && quizOk;
+}
 
 // (Avatar placeholders are no longer used — we render initials when avatar_url is empty.)

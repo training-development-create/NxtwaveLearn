@@ -103,8 +103,9 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
     for (let i = 0; i < idx; i++) {
       const l = lessons[i];
       const p = progress[l.id];
-      const passedAny = (attemptsByLesson[l.id] || []).some(a => a.passed);
-      if (!p?.completed || !passedAny) return true;
+      // `completed` is now component-aware (video watched AND, when present, a
+      // passing quiz) so it alone gates unlocking the next lesson.
+      if (!p?.completed) return true;
     }
     return false;
   });
@@ -413,7 +414,8 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
   const lessonAttempts = lesson ? (attemptsByLesson[lesson.id] || []) : [];
   // No-video lessons skip the watch step automatically.
   const stepVideoDone = !hasVideo || !!lessonProgress?.completed || (DUR > 0 && (lessonProgress?.watched_seconds ?? 0) >= DUR);
-  const stepQuizDone = lessonAttempts.some(a => a.passed);
+  // No-quiz lessons skip the assessment step automatically.
+  const stepQuizDone = !lesson.has_quiz || lessonAttempts.some(a => a.passed);
   const agreementGate = !!course?.agreement_required;
   const stepAgreementDone = !agreementGate || hasSignedAgreement;
   const stepCompleted = stepVideoDone && stepQuizDone && stepAgreementDone;
@@ -545,9 +547,16 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
                     setFurthest(DUR);
                     setT(DUR);
                   }
-                  completedRef.current = true;
+                  // Finishing the video completes the lesson ONLY when it has no
+                  // quiz. When a quiz exists the lesson stays incomplete until the
+                  // learner passes it (handled in Assessment.submit). We still
+                  // persist the full watch position either way.
+                  const videoCompletesLesson = !lesson.has_quiz;
+                  const alreadyDone = !!progress[lesson.id]?.completed;
+                  const nowCompleted = videoCompletesLesson || alreadyDone;
+                  completedRef.current = nowCompleted;
                   if (user && lesson) {
-                    saveLessonProgress(user.id, lesson.id, DUR || furthestRef.current, true)
+                    saveLessonProgress(user.id, lesson.id, DUR || furthestRef.current, nowCompleted)
                       .then(() => reload())
                       .catch(() => reload());
                   }
@@ -691,7 +700,10 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
             learner has not yet signed. Sits BELOW the quiz so the flow reads
             top-to-bottom: video → quiz → sign. */}
         {agreementGate && !hasSignedAgreement && (() => {
-          const allLessonsPassed = lessons.length > 0 && lessons.every(l => (attemptsByLesson[l.id] || []).some(a => a.passed));
+          // Agreement unlocks once every lesson is fully done per its own
+          // components (video watched + quiz passed where each exists), which
+          // the component-aware `completed` flag already captures.
+          const allLessonsPassed = lessons.length > 0 && lessons.every(l => !!progress[l.id]?.completed);
           const agreementUnlocked = allLessonsPassed;
           const goSign = () => {
             if (!agreementUnlocked) {

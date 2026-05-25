@@ -4,7 +4,7 @@ import { Btn, Card, Chip, ProgressBar, Avatar, EmptyState } from "./ui";
 import { fmt } from "./data";
 
 type CourseRow = { id: string; title: string; published_at?: string | null; due_in_days?: number | null };
-type LessonRow = { id: string; title: string; course_id: string; duration_seconds: number };
+type LessonRow = { id: string; title: string; course_id: string; duration_seconds: number; video_path?: string | null };
 type LearnerRow = {
   id: string; name: string; email: string; empId: string;
   department?: string | null;
@@ -164,6 +164,12 @@ export function AdminAnalytics() {
   const courseLessons = lessons.filter(l => l.course_id === course);
   const lessonIds = courseLessons.map(l => l.id);
   const totalRuntime = courseLessons.reduce((s, l) => s + (l.duration_seconds || 0), 0);
+  // Does this course contain ANY video? duration_seconds is 0 exactly when a
+  // lesson has no video (set by the upload flow), so a non-zero total runtime
+  // means at least one real video. When false, all video-specific analytics
+  // (watched time, % of runtime, "video watch progress") are hidden so a
+  // quiz-only / e-sign-only course doesn't show empty watch columns.
+  const courseHasVideo = totalRuntime > 0;
 
   useEffect(() => { if (courseLessons.length) setVid(courseLessons[0].id); else setVid(''); /* eslint-disable-next-line */ }, [course, lessons.length]);
 
@@ -988,9 +994,11 @@ export function AdminAnalytics() {
       <Card pad={0}>
         <div style={{padding:'18px 22px', display:'flex', alignItems:'center', borderBottom:'1px solid #EEF2F7'}}>
           <div>
-            <div className="eyebrow">PER-LEARNER WATCH (CLICK TO OPEN PROFILE)</div>
+            <div className="eyebrow">{courseHasVideo ? 'PER-LEARNER WATCH (CLICK TO OPEN PROFILE)' : 'PER-LEARNER PROGRESS (CLICK TO OPEN PROFILE)'}</div>
             <div style={{fontSize:16, fontWeight:800, color:'#002A4B', marginTop:2}}>
-              {selectedLesson ? `${selectedLesson.title} · runtime ${fmt(selectedLesson.duration_seconds)}` : 'Select a video'}
+              {selectedLesson
+                ? (courseHasVideo ? `${selectedLesson.title} · runtime ${fmt(selectedLesson.duration_seconds)}` : selectedLesson.title)
+                : (courseHasVideo ? 'Select a video' : 'Select a lesson')}
             </div>
           </div>
           {selectedLesson && (
@@ -1023,11 +1031,12 @@ export function AdminAnalytics() {
             runtime={selectedLesson.duration_seconds}
             courseId={course}
             search={search}
+            showVideo={courseHasVideo}
             allowedUserIds={(department !== 'all' || subDepartment !== 'all' || managerEmail !== 'all') ? new Set(filtered.map(f => f.id)) : null}
             onOpenUser={(u)=>setDetailUser(u)}
           />
         ) : (
-          <div style={{padding:24}}><EmptyState icon="🎬" title="Select a video" sub="Choose a course and video to see watch progress and assessments."/></div>
+          <div style={{padding:24}}><EmptyState icon={courseHasVideo ? '🎬' : '📝'} title={courseHasVideo ? 'Select a video' : 'Select a lesson'} sub={courseHasVideo ? 'Choose a course and video to see watch progress and assessments.' : 'Choose a course and lesson to see assessment progress.'}/></div>
         )}
       </Card>
 
@@ -1039,6 +1048,7 @@ export function AdminAnalytics() {
 function EmployeeDetailModal({ user, onClose, focusCourseId }: { user: LearnerRow; onClose: () => void; focusCourseId: string }) {
   type CourseDetail = {
     id: string; title: string; emoji: string; enrolled: boolean;
+    hasVideo: boolean;
     totalRuntime: number; totalWatched: number; lessonsTotal: number; lessonsCompleted: number;
     avgScore: number; status: 'completed' | 'in-progress' | 'not-started';
     lessons: { id: string; title: string; runtime: number; watched: number; pct: number; completed: boolean; bestScore: number; attempts: number }[];
@@ -1112,6 +1122,7 @@ function EmployeeDetailModal({ user, onClose, focusCourseId }: { user: LearnerRo
           };
         });
         const totalRuntime = ls.reduce((s, l) => s + (l.duration_seconds || 0), 0);
+        const hasVideo = ls.some(l => (l.duration_seconds || 0) > 0);
         const totalWatched = lessonRows.reduce((s, l) => s + l.watched, 0);
         const lessonsCompleted = lessonRows.filter(l => l.completed).length;
         const allScores = lessonRows.map(l => l.bestScore).filter(s => s > 0);
@@ -1128,6 +1139,7 @@ function EmployeeDetailModal({ user, onClose, focusCourseId }: { user: LearnerRo
           : totalWatched > 0 ? 'in-progress' : 'not-started';
         return {
           id: c.id, title: c.title, emoji: c.emoji, enrolled: enrolledIds.has(c.id),
+          hasVideo,
           totalRuntime, totalWatched, lessonsTotal: ls.length, lessonsCompleted, avgScore, status, lessons: lessonRows,
           agreementRequired: !!c.agreement_required,
           agreementPath: c.agreement_pdf_path ?? null,
@@ -1214,9 +1226,10 @@ function EmployeeDetailModal({ user, onClose, focusCourseId }: { user: LearnerRo
           <button onClick={onClose} style={{padding:'6px 14px', background:'#F7F9FC', border:'1px solid #DDE4ED', borderRadius:8, fontSize:13, fontWeight:600, color:'#3B4A5E', cursor:'pointer'}}>Close</button>
         </div>
 
-        <div style={{padding:'16px 24px', display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:12, borderBottom:'1px solid #EEF2F7', background:'#FAFBFD'}}>
+        <div style={{padding:'16px 24px', display:'grid', gridTemplateColumns:`repeat(${d?.hasVideo ? 3 : 2},1fr)`, gap:12, borderBottom:'1px solid #EEF2F7', background:'#FAFBFD'}}>
           <MiniStat label="Course completion" v={`${courseCompletionPct}%`}/>
-          <MiniStat label="Video watch progress" v={`${watchPct}%`}/>
+          {/* Video watch progress only when the focused course actually has a video. */}
+          {d?.hasVideo && <MiniStat label="Video watch progress" v={`${watchPct}%`}/>}
           <MiniStat label="Assessment completion" v={`${assessmentsCompleted}/${assessmentsTotal}`}/>
         </div>
 
@@ -1232,7 +1245,9 @@ function EmployeeDetailModal({ user, onClose, focusCourseId }: { user: LearnerRo
                 <div style={{flex:1, minWidth:0}}>
                   <div style={{fontSize:14, fontWeight:700, color:'#002A4B'}}>{c.title}</div>
                   <div style={{fontSize:11, color:'#5B6A7D', marginTop:2}}>
-                    {c.lessonsCompleted}/{c.lessonsTotal} videos · {fmt(c.totalWatched)} of {fmt(c.totalRuntime)} watched
+                    {c.hasVideo
+                      ? <>{c.lessonsCompleted}/{c.lessonsTotal} videos · {fmt(c.totalWatched)} of {fmt(c.totalRuntime)} watched</>
+                      : <>{c.lessonsCompleted}/{c.lessonsTotal} {c.lessonsTotal === 1 ? 'lesson' : 'lessons'} complete</>}
                     {c.avgScore > 0 && <> · avg assessment {c.avgScore}%</>}
                   </div>
                 </div>
@@ -1271,7 +1286,10 @@ function EmployeeDetailModal({ user, onClose, focusCourseId }: { user: LearnerRo
                 <table style={{width:'100%', borderCollapse:'collapse'}}>
                   <thead>
                     <tr style={{background:'#fff'}}>
-                      {['Video','Watched','Of runtime','Assessment %','Attempts','Status'].map(h => (
+                      {(c.hasVideo
+                        ? ['Video','Watched','Of runtime','Assessment %','Attempts','Status']
+                        : ['Lesson','Assessment %','Attempts','Status']
+                      ).map(h => (
                         <th key={h} style={{padding:'8px 14px', textAlign:'left', fontSize:10, color:'#8A97A8', fontWeight:700, letterSpacing:'.08em', borderBottom:'1px solid #F1F4F9'}}>{h.toUpperCase()}</th>
                       ))}
                     </tr>
@@ -1280,12 +1298,18 @@ function EmployeeDetailModal({ user, onClose, focusCourseId }: { user: LearnerRo
                     {c.lessons.map(l => (
                       <tr key={l.id} style={{borderBottom:'1px solid #F7F9FC'}}>
                         <td style={{padding:'8px 14px', fontSize:13, color:'#3B4A5E'}}>{l.title}</td>
-                        <td style={{padding:'8px 14px', fontSize:13, fontWeight:700, color:'#002A4B'}}>{fmt(l.watched)}</td>
-                        <td style={{padding:'8px 14px', minWidth:160}}><ProgressBar value={l.pct} showLabel height={4}/></td>
+                        {c.hasVideo && (
+                          <>
+                            <td style={{padding:'8px 14px', fontSize:13, fontWeight:700, color:'#002A4B'}}>{fmt(l.watched)}</td>
+                            <td style={{padding:'8px 14px', minWidth:160}}><ProgressBar value={l.pct} showLabel height={4}/></td>
+                          </>
+                        )}
                         <td style={{padding:'8px 14px', fontSize:12, color: l.bestScore>=70?'#17A674':l.bestScore>0?'#C2261D':'#8A97A8', fontWeight:700}}>{l.bestScore>0?`${l.bestScore}%`:'—'}</td>
                         <td style={{padding:'8px 14px', fontSize:12, color:'#5B6A7D', fontWeight:700}}>{l.attempts || 0}</td>
                         <td style={{padding:'8px 14px'}}>
-                          <Chip color={l.completed?'#17A674':l.watched>0?'#E08A1E':'#8A97A8'}>{l.completed?'Done':l.watched>0?'Watching':'—'}</Chip>
+                          {c.hasVideo
+                            ? <Chip color={l.completed?'#17A674':l.watched>0?'#E08A1E':'#8A97A8'}>{l.completed?'Done':l.watched>0?'Watching':'—'}</Chip>
+                            : <Chip color={l.completed?'#17A674':l.attempts>0?'#E08A1E':'#8A97A8'}>{l.completed?'Done':l.attempts>0?'Attempted':'—'}</Chip>}
                         </td>
                       </tr>
                     ))}
@@ -1309,7 +1333,7 @@ function MiniStat({ label, v }: { label: string; v: string }) {
   );
 }
 
-function PerLessonWatch({ lessonId, runtime, courseId, search, allowedUserIds, onOpenUser }: { lessonId: string; runtime: number; courseId: string; search: string; allowedUserIds: Set<string> | null; onOpenUser?: (u: LearnerRow) => void }) {
+function PerLessonWatch({ lessonId, runtime, courseId, search, showVideo, allowedUserIds, onOpenUser }: { lessonId: string; runtime: number; courseId: string; search: string; showVideo: boolean; allowedUserIds: Set<string> | null; onOpenUser?: (u: LearnerRow) => void }) {
   const [rows, setRows] = useState<{ id: string; name: string; email: string; empId: string; department?: string | null; managerName?: string | null; managerEmail?: string | null; managerContact?: string | null; sec: number; pct: number; completed: boolean; quizPct: number; attempts: number }[]>([]);
   const chNameRef = useRef<string>('');
   const load = async () => {
@@ -1353,12 +1377,13 @@ function PerLessonWatch({ lessonId, runtime, courseId, search, allowedUserIds, o
         const sec = p?.watched_seconds || 0;
         const atts = attsByUser.get(uid) || [];
         const quizPct = atts.length ? atts.reduce((m, a) => Math.max(m, a.total ? Math.round((a.score/a.total)*100) : 0), 0) : 0;
-        // Strict gate: video done AND assessment 100% AND (signed when course requires it).
-        // Anything less keeps the row in "In progress" (or "Not started" if no watch yet).
-        const watchDone = !!p?.completed;
-        const quizPassedFully = quizPct === 100;
+        // `lesson_progress.completed` is component-aware — it's set only once
+        // every component the lesson actually has (video watched + quiz passed,
+        // where each exists) is satisfied. So it alone, plus the course-level
+        // agreement gate, decides "Completed". This also fixes quiz-less /
+        // video-less lessons that previously could never reach 100%.
         const agreementOk = !agreementRequired || signedSet.has(uid);
-        const fullyCompleted = watchDone && quizPassedFully && agreementOk;
+        const fullyCompleted = !!p?.completed && agreementOk;
         return {
           id: uid, name: u?.full_name || u?.email || '—', email: u?.email || '', empId: u?.employee_id || '—',
           department: u?.department, subDepartment: u?.sub_department, managerName: u?.manager_name, managerEmail: u?.manager_email, managerContact: u?.manager_contact,
@@ -1407,7 +1432,10 @@ function PerLessonWatch({ lessonId, runtime, courseId, search, allowedUserIds, o
       <table style={{width:'100%', borderCollapse:'collapse'}}>
         <thead>
           <tr style={{background:'#FAFBFE'}}>
-            {['Employee','Emp ID','Watched','Of runtime','Assessment %','Attempts','Status'].map(h => (
+            {(showVideo
+              ? ['Employee','Emp ID','Watched','Of runtime','Assessment %','Attempts','Status']
+              : ['Employee','Emp ID','Assessment %','Attempts','Status']
+            ).map(h => (
               <th key={h} style={{padding:'10px 16px', textAlign:'left', fontSize:10, color:'#8A97A8', fontWeight:700, letterSpacing:'.08em', borderBottom:'1px solid #EEF2F7'}}>{h.toUpperCase()}</th>
             ))}
           </tr>
@@ -1429,12 +1457,18 @@ function PerLessonWatch({ lessonId, runtime, courseId, search, allowedUserIds, o
                 </div>
               </td>
               <td style={{padding:'10px 16px'}}><code style={{fontSize:12, background:'#F7F9FC', padding:'3px 8px', borderRadius:6, color:'#0072FF', fontWeight:700}}>{r.empId}</code></td>
-              <td style={{padding:'10px 16px', fontSize:13, fontWeight:700, color:'#002A4B'}}>{fmt(r.sec)}</td>
-              <td style={{padding:'10px 16px', minWidth:200}}><ProgressBar value={r.pct} showLabel/></td>
+              {showVideo && (
+                <>
+                  <td style={{padding:'10px 16px', fontSize:13, fontWeight:700, color:'#002A4B'}}>{fmt(r.sec)}</td>
+                  <td style={{padding:'10px 16px', minWidth:200}}><ProgressBar value={r.pct} showLabel/></td>
+                </>
+              )}
               <td style={{padding:'10px 16px', fontSize:12, fontWeight:800, color: r.quizPct>=70?'#17A674':r.quizPct>0?'#C2261D':'#8A97A8'}}>{r.quizPct>0?`${r.quizPct}%`:'—'}</td>
               <td style={{padding:'10px 16px', fontSize:12, fontWeight:800, color:'#3B4A5E'}}>{r.attempts}</td>
               <td style={{padding:'10px 16px'}}>
-                <Chip color={r.completed?'#17A674':r.sec>0?'#E08A1E':'#8A97A8'}>{r.completed?'Completed':r.sec>0?'In progress':'Not started'}</Chip>
+                {(() => { const started = r.sec > 0 || r.attempts > 0; return (
+                  <Chip color={r.completed?'#17A674':started?'#E08A1E':'#8A97A8'}>{r.completed?'Completed':started?'In progress':'Not started'}</Chip>
+                ); })()}
               </td>
             </tr>
           ))}

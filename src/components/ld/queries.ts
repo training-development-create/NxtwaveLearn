@@ -204,8 +204,18 @@ export function useCourseLessons(courseId: string | null | undefined, userId: st
       }
     }
     const { data: ls } = await supabase.from('lessons').select('*').eq('course_id', courseId).order('position', { ascending: true });
+    // Which of these lessons have at least one MCQ? Needed so the completion
+    // gate doesn't demand a passing attempt for a quiz-less lesson. One extra
+    // round-trip per course load (cheap — only this course's lesson ids).
+    const lessonIdsForQuiz = (ls || []).map((l: { id: string }) => l.id);
+    const quizLessonIds = new Set<string>();
+    if (lessonIdsForQuiz.length) {
+      const { data: mcq } = await supabase.from('mcq_questions').select('lesson_id').in('lesson_id', lessonIdsForQuiz);
+      (mcq || []).forEach((m: { lesson_id: string }) => quizLessonIds.add(m.lesson_id));
+    }
     const arr: Lesson[] = (ls || []).map((l: { id: string; course_id: string; title: string; duration_seconds: number; position: number; video_url: string | null; video_path: string | null; reading_material_path?: string | null; reading_material_name?: string | null; assessment_file_path?: string | null; assessment_file_name?: string | null }) => ({
       id: l.id, course_id: l.course_id, title: l.title, duration: l.duration_seconds, position: l.position, video_url: l.video_url, video_path: l.video_path,
+      has_quiz: quizLessonIds.has(l.id),
       reading_material_path: l.reading_material_path ?? null,
       reading_material_name: l.reading_material_name ?? null,
       assessment_file_path: l.assessment_file_path ?? null,
