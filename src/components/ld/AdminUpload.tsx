@@ -723,7 +723,7 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
             .select('employee_id')
             .eq('course_id', courseId)
             .in('employee_id', csvMatched.map(m => m.id));
-          const alreadySet = new Set((already ?? []).map((r: { employee_id: string }) => r.employee_id));
+          const alreadySet = new Set((already ?? []).map((r: { employee_id: string | null }) => r.employee_id));
           const csvRows = csvMatched
             .filter(m => !alreadySet.has(m.id))
             .map(m => ({ course_id: courseId, employee_id: m.id }));

@@ -57,10 +57,13 @@ export type Database = {
       }
       courses: {
         Row: {
+          agreement_pdf_path: string | null
+          agreement_required: boolean
           blurb: string
           created_at: string
           created_by: string | null
           due_in: string | null
+          due_in_days: number | null
           duration_label: string
           emoji: string
           hue: string
@@ -72,10 +75,13 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          agreement_pdf_path?: string | null
+          agreement_required?: boolean
           blurb?: string
           created_at?: string
           created_by?: string | null
           due_in?: string | null
+          due_in_days?: number | null
           duration_label?: string
           emoji?: string
           hue?: string
@@ -87,10 +93,13 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          agreement_pdf_path?: string | null
+          agreement_required?: boolean
           blurb?: string
           created_at?: string
           created_by?: string | null
           due_in?: string | null
+          due_in_days?: number | null
           duration_label?: string
           emoji?: string
           hue?: string
@@ -102,6 +111,180 @@ export type Database = {
           updated_at?: string
         }
         Relationships: []
+      }
+      course_assignments: {
+        Row: {
+          course_id: string
+          created_at: string
+          department_id: string | null
+          employee_id: string | null
+          id: string
+          manager_id: string | null
+          scope_all: boolean
+          sub_department_id: string | null
+        }
+        Insert: {
+          course_id: string
+          created_at?: string
+          department_id?: string | null
+          employee_id?: string | null
+          id?: string
+          manager_id?: string | null
+          scope_all?: boolean
+          sub_department_id?: string | null
+        }
+        Update: {
+          course_id?: string
+          created_at?: string
+          department_id?: string | null
+          employee_id?: string | null
+          id?: string
+          manager_id?: string | null
+          scope_all?: boolean
+          sub_department_id?: string | null
+        }
+        Relationships: []
+      }
+      departments: {
+        Row: {
+          created_at: string
+          darwin_id: string | null
+          id: string
+          name: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          darwin_id?: string | null
+          id?: string
+          name: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          darwin_id?: string | null
+          id?: string
+          name?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      employees: {
+        Row: {
+          auth_user_id: string | null
+          contact: string | null
+          created_at: string
+          darwin_id: string | null
+          department_id: string | null
+          designation_name: string | null
+          email: string
+          employee_id: string | null
+          id: string
+          is_admin: boolean
+          last_login_at: string | null
+          last_synced_at: string | null
+          manager_id: string | null
+          name: string
+          status: "active" | "inactive" | "unassigned"
+          sub_department_id: string | null
+          updated_at: string
+        }
+        Insert: {
+          auth_user_id?: string | null
+          contact?: string | null
+          created_at?: string
+          darwin_id?: string | null
+          department_id?: string | null
+          designation_name?: string | null
+          email: string
+          employee_id?: string | null
+          id?: string
+          is_admin?: boolean
+          last_login_at?: string | null
+          last_synced_at?: string | null
+          manager_id?: string | null
+          name?: string
+          status?: "active" | "inactive" | "unassigned"
+          sub_department_id?: string | null
+          updated_at?: string
+        }
+        Update: {
+          auth_user_id?: string | null
+          contact?: string | null
+          created_at?: string
+          darwin_id?: string | null
+          department_id?: string | null
+          designation_name?: string | null
+          email?: string
+          employee_id?: string | null
+          id?: string
+          is_admin?: boolean
+          last_login_at?: string | null
+          last_synced_at?: string | null
+          manager_id?: string | null
+          name?: string
+          status?: "active" | "inactive" | "unassigned"
+          sub_department_id?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "employees_department_id_fkey"
+            columns: ["department_id"]
+            isOneToOne: false
+            referencedRelation: "departments"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "employees_sub_department_id_fkey"
+            columns: ["sub_department_id"]
+            isOneToOne: false
+            referencedRelation: "sub_departments"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "employees_manager_id_fkey"
+            columns: ["manager_id"]
+            isOneToOne: false
+            referencedRelation: "employees"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      sub_departments: {
+        Row: {
+          created_at: string
+          darwin_id: string | null
+          department_id: string
+          id: string
+          name: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          darwin_id?: string | null
+          department_id: string
+          id?: string
+          name: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          darwin_id?: string | null
+          department_id?: string
+          id?: string
+          name?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "sub_departments_department_id_fkey"
+            columns: ["department_id"]
+            isOneToOne: false
+            referencedRelation: "departments"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       enrollments: {
         Row: {
@@ -376,6 +559,10 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      assigned_employees: {
+        Args: { _course_id: string }
+        Returns: { employee_id: string }[]
+      }
       demote_admin: { Args: { _email: string }; Returns: undefined }
       has_role: {
         Args: {

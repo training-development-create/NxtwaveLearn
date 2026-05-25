@@ -114,6 +114,11 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
     return <div style={{padding:40}}><EmptyState icon="📝" title="No assessment for this video" sub="Your Compliance admin hasn't added questions for this lesson yet." action={<Btn onClick={()=>onNav('player')}>Back to video</Btn>}/></div>;
   }
 
+  // Real lesson title, or null when it's the blank "Untitled Lesson" default.
+  // Headings show the lesson name when meaningful, otherwise fall back to the
+  // course title so learners never see "Untitled Lesson".
+  const lessonName = lesson.title && lesson.title !== 'Untitled Lesson' ? lesson.title : null;
+
   if (stage === 'intro') {
     return (
       <div style={{padding:'28px 40px', maxWidth:860, animation:'fadeUp .3s'}}>
@@ -121,8 +126,8 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
           <div style={{padding:'36px 40px', background:'#0A1F3D', color:'#fff', position:'relative', overflow:'hidden'}}>
             <div style={{position:'absolute', top:-60, right:-60, width:240, height:240, borderRadius:999, background:'#0072FF', opacity:.22, filter:'blur(70px)'}}/>
             <div style={{position:'relative'}}>
-              <div style={{fontSize:11, fontWeight:600, letterSpacing:'.12em', color:'#7FDBFF', textTransform:'uppercase'}}>Assessment · {course.title}</div>
-              <h2 style={{fontSize:30, color:'#fff', margin:'10px 0 8px', letterSpacing:'-.02em', fontWeight:700}}>{lesson.title}</h2>
+              <div style={{fontSize:11, fontWeight:600, letterSpacing:'.12em', color:'#7FDBFF', textTransform:'uppercase'}}>Assessment{lessonName ? ` · ${course.title}` : ''}</div>
+              <h2 style={{fontSize:30, color:'#fff', margin:'10px 0 8px', letterSpacing:'-.02em', fontWeight:700}}>{lessonName || course.title}</h2>
               <p style={{color:'#9EC9F0', fontSize:14, margin:0, lineHeight:1.55, maxWidth:540}}>Answer {questions.length} questions. <strong style={{color:'#fff'}}>Every answer must be correct (100%) to pass.</strong> Any wrong answers can be re-attempted without restarting the whole quiz.</p>
             </div>
           </div>
@@ -338,7 +343,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
       <div style={{display:'flex', alignItems:'center', gap:16, marginBottom:20}}>
         <div>
           <div style={{fontSize:11, fontWeight:600, color:'#8A97A8', letterSpacing:'.06em', textTransform:'uppercase'}}>{retakeIndices !== null ? `Retake · ${retakeIndices.length} wrong question${retakeIndices.length === 1 ? '' : 's'}` : `Assessment · Video ${lessonIdx+1} of ${lessons.length}`}</div>
-          <h2 style={{fontSize:22, color:'#0A1F3D', margin:'4px 0 0', letterSpacing:'-.02em', fontWeight:700}}>{lesson.title}</h2>
+          <h2 style={{fontSize:22, color:'#0A1F3D', margin:'4px 0 0', letterSpacing:'-.02em', fontWeight:700}}>{lessonName || course.title}</h2>
         </div>
         <div style={{marginLeft:'auto', display:'flex', gap:10, alignItems:'center'}}>
           <Btn variant="ghost" size="sm" onClick={()=>onNav('player')}>Exit</Btn>

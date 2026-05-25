@@ -509,7 +509,14 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
                 <div style={{position:'absolute', top:-40, right:-40, width:180, height:180, borderRadius:999, background:'rgba(255,255,255,.07)', pointerEvents:'none'}}/>
                 <div style={{width:64, height:64, borderRadius:18, background:'rgba(255,255,255,.15)', display:'grid', placeItems:'center', fontSize:26, margin:'0 auto'}}>📝</div>
                 <div style={{fontSize:11, fontWeight:700, color:'#9EC9F0', letterSpacing:'.12em', textTransform:'uppercase', marginTop:16}}>Step 1 · Assessment</div>
-                <div style={{fontSize:22, fontWeight:800, color:'#fff', marginTop:6, letterSpacing:'-.02em', lineHeight:1.2}}>{lesson.title}</div>
+                {/* Show the COURSE title as the hero heading (no-video courses
+                    are usually a single assessment, and the lesson title is
+                    often the blank "Untitled Lesson" default). Keep the lesson
+                    title only as a subtitle when it's a real, non-default name. */}
+                <div style={{fontSize:22, fontWeight:800, color:'#fff', marginTop:6, letterSpacing:'-.02em', lineHeight:1.2}}>{course.title}</div>
+                {lesson.title && lesson.title !== 'Untitled Lesson' && (
+                  <div style={{fontSize:13, fontWeight:600, color:'#9EC9F0', marginTop:4}}>{lesson.title}</div>
+                )}
                 <div style={{fontSize:13, color:'#C8DDF4', marginTop:8, lineHeight:1.5}}>
                   {stepQuizDone
                     ? 'You\'ve already passed this assessment.'
@@ -519,12 +526,14 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
                 </div>
               </div>
               <div style={{padding:'22px 40px 28px', textAlign:'center', display:'flex', flexDirection:'column', gap:10, alignItems:'center'}}>
-                {stepQuizDone && (
+                {/* Once passed, the assessment is complete — no retake offered. */}
+                {stepQuizDone ? (
                   <div style={{padding:'8px 18px', background:'#E8F7EF', border:'1px solid #C5EBD7', borderRadius:10, fontSize:13, fontWeight:700, color:'#0F7C57', display:'inline-flex', alignItems:'center', gap:8}}>
                     <span>✓</span> Assessment passed
                   </div>
+                ) : (
+                  <Btn size="lg" onClick={goToQuiz}>Start assessment →</Btn>
                 )}
-                <Btn size="lg" onClick={goToQuiz}>{stepQuizDone ? 'Retake assessment' : 'Start assessment →'}</Btn>
               </div>
             </Card>
           </div>
@@ -685,13 +694,20 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
               </div>
               <div style={{flex:1, minWidth:0}}>
                 <div style={{fontSize:11, fontWeight:700, color:'#0072FF', letterSpacing:'.08em', textTransform:'uppercase'}}>Step 2 · Assessment</div>
-                <div style={{fontSize:13, fontWeight:700, color:'#0A1F3D', marginTop:2}}>{unlocked ? 'Ready to take' : 'Locked — finish the video'}</div>
+                <div style={{fontSize:13, fontWeight:700, color:'#0A1F3D', marginTop:2}}>{stepQuizDone ? 'Passed ✓' : unlocked ? 'Ready to take' : 'Locked — finish the video'}</div>
               </div>
             </div>
             <div style={{marginTop:10, fontSize:11, color:'#5B6A7D'}}>{Math.round(watchedPct)}% watched · {fmt(furthest)} of {fmt(DUR)}</div>
             <div style={{marginTop:6}}><ProgressBar value={Math.min(100, Math.round(watchedPct))} height={4}/></div>
             <div style={{marginTop:12}}>
-              <Btn full disabled={!unlocked} onClick={goToQuiz}>{unlocked ? 'Start assessment →' : `Watch ${Math.ceil(UNLOCK_THRESHOLD*100)}% to unlock`}</Btn>
+              {/* Once passed, the assessment is complete — no retake offered. */}
+              {stepQuizDone ? (
+                <div style={{padding:'10px', textAlign:'center', background:'#E8F7EF', border:'1px solid #C5EBD7', borderRadius:10, fontSize:13, fontWeight:700, color:'#0F7C57'}}>
+                  ✓ Assessment passed
+                </div>
+              ) : (
+                <Btn full disabled={!unlocked} onClick={goToQuiz}>{unlocked ? 'Start assessment →' : `Watch ${Math.ceil(UNLOCK_THRESHOLD*100)}% to unlock`}</Btn>
+              )}
             </div>
           </Card>
         )}

@@ -107,9 +107,10 @@ type BtnProps = {
   disabled?: boolean;
   icon?: ReactNode;
   style?: CSSProperties;
+  title?: string;
 };
 
-export function Btn({ children, variant='primary', size='md', full, onClick, disabled, icon, style }: BtnProps) {
+export function Btn({ children, variant='primary', size='md', full, onClick, disabled, icon, style, title }: BtnProps) {
   const sizes: Record<string, CSSProperties> = {
     sm: { padding:'8px 14px', fontSize:13, borderRadius:10 },
     md: { padding:'11px 20px', fontSize:14, borderRadius:12 },
@@ -124,7 +125,7 @@ export function Btn({ children, variant='primary', size='md', full, onClick, dis
     danger: { background:'#fff', color:'#C2261D', border:'1px solid #FCE1DE' },
   };
   return (
-    <button onClick={onClick} disabled={disabled} style={{
+    <button onClick={onClick} disabled={disabled} title={title} style={{
       ...sizes[size], ...variants[variant],
       display:'inline-flex', alignItems:'center', justifyContent:'center', gap:8,
       fontWeight:600, cursor: disabled?'not-allowed':'pointer', opacity: disabled?.5:1,

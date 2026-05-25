@@ -996,9 +996,20 @@ export function AdminAnalytics() {
           <div>
             <div className="eyebrow">{courseHasVideo ? 'PER-LEARNER WATCH (CLICK TO OPEN PROFILE)' : 'PER-LEARNER PROGRESS (CLICK TO OPEN PROFILE)'}</div>
             <div style={{fontSize:16, fontWeight:800, color:'#002A4B', marginTop:2}}>
-              {selectedLesson
-                ? (courseHasVideo ? `${selectedLesson.title} · runtime ${fmt(selectedLesson.duration_seconds)}` : selectedLesson.title)
-                : (courseHasVideo ? 'Select a video' : 'Select a lesson')}
+              {(() => {
+                if (!selectedLesson) return courseHasVideo ? 'Select a video' : 'Select a lesson';
+                const courseTitle = courses.find(c => c.id === course)?.title || 'Course';
+                // The lesson title is often the blank "Untitled Lesson" default
+                // (especially on quiz-only courses) — fall back to the course
+                // title so admins never see "Untitled Lesson".
+                const lessonName = selectedLesson.title && selectedLesson.title !== 'Untitled Lesson'
+                  ? selectedLesson.title
+                  : null;
+                if (courseHasVideo) {
+                  return `${lessonName || courseTitle} · runtime ${fmt(selectedLesson.duration_seconds)}`;
+                }
+                return lessonName ? `${courseTitle} · ${lessonName}` : courseTitle;
+              })()}
             </div>
           </div>
           {selectedLesson && (
@@ -1334,34 +1345,41 @@ function MiniStat({ label, v }: { label: string; v: string }) {
 }
 
 function PerLessonWatch({ lessonId, runtime, courseId, search, showVideo, allowedUserIds, onOpenUser }: { lessonId: string; runtime: number; courseId: string; search: string; showVideo: boolean; allowedUserIds: Set<string> | null; onOpenUser?: (u: LearnerRow) => void }) {
-  const [rows, setRows] = useState<{ id: string; name: string; email: string; empId: string; department?: string | null; managerName?: string | null; managerEmail?: string | null; managerContact?: string | null; sec: number; pct: number; completed: boolean; quizPct: number; attempts: number }[]>([]);
+  const [rows, setRows] = useState<{ id: string; signedIn: boolean; name: string; email: string; empId: string; department?: string | null; subDepartment?: string | null; managerName?: string | null; managerEmail?: string | null; managerContact?: string | null; sec: number; pct: number; completed: boolean; quizPct: number; attempts: number }[]>([]);
   const chNameRef = useRef<string>('');
   const load = async () => {
-    // Strict completion needs the course-level agreement requirement and the
-    // set of users who've signed for THIS course — without them the row would
-    // mark "Completed" the moment lesson_progress.completed flipped, even if
-    // the learner scored < 100% or never signed the agreement. Status must
-    // match the rule used by KPIs / leaderboard / detail modal.
-    const [{ data: enrolls }, { data: progress }, { data: profiles }, { data: attempts }, { data: courseRow }, { data: sigs }] = await Promise.all([
-      supabase.from('enrollments').select('user_id').eq('course_id', courseId),
+    // Rows are driven by the course's ASSIGNED employees — resolved via
+    // assigned_employees() — NOT the enrollments table. This is what lets
+    // employees who have been assigned but haven't logged in yet (no
+    // auth_user_id, so no enrollment row) still appear here as "Pending login".
+    // Strict completion also needs the course-level agreement requirement and
+    // the set of users who've signed, so the row's status matches KPIs /
+    // leaderboard / detail modal.
+    const [{ data: assignedRows }, { data: progress }, { data: attempts }, { data: courseRow }, { data: sigs }] = await Promise.all([
+      supabase.rpc('assigned_employees', { _course_id: courseId }),
       supabase.from('lesson_progress').select('user_id, watched_seconds, completed').eq('lesson_id', lessonId),
-      supabase.from('employees')
-        .select('id, auth_user_id, email, name, employee_id, departments:department_id(name), sub_departments:sub_department_id(name), manager:manager_id(name, email, contact)')
-        .not('auth_user_id', 'is', null)
-        .eq('status', 'active'),  // exited employees must not appear in per-video table
       supabase.from('quiz_attempts').select('user_id, score, total').eq('lesson_id', lessonId),
       supabase.from('courses').select('agreement_required').eq('id', courseId).maybeSingle(),
       supabase.from('agreement_signatures').select('user_id').eq('course_id', courseId).range(0, 99999),
     ]);
     const agreementRequired = !!(courseRow as { agreement_required?: boolean | null } | null)?.agreement_required;
     const signedSet = new Set(((sigs || []) as { user_id: string }[]).map(s => s.user_id));
-    const enrolledIds = new Set((enrolls || []).map((e: { user_id: string }) => e.user_id));
-    const profById = new Map(
-      ((profiles || []) as unknown as EmployeeJoinRow[])
-        .map(employeeToProfile)
-        .filter((p): p is ProfileMini => p !== null)
-        .map(p => [p.id, p])
-    );
+
+    // Load the assigned employees (active only). auth_user_id is null for
+    // anyone who has never signed in — they must still show up. Page through
+    // the assigned ids to dodge Supabase's 1000-row IN/select cap.
+    const assignedRowIds = ((assignedRows || []) as { employee_id: string }[]).map(r => r.employee_id);
+    const employees: EmployeeJoinRow[] = [];
+    const PAGE = 1000;
+    for (let i = 0; i < assignedRowIds.length; i += PAGE) {
+      const slice = assignedRowIds.slice(i, i + PAGE);
+      const { data } = await supabase.from('employees')
+        .select('id, auth_user_id, email, name, employee_id, departments:department_id(name), sub_departments:sub_department_id(name), manager:manager_id(name, email, contact)')
+        .in('id', slice)
+        .eq('status', 'active');
+      employees.push(...((data || []) as unknown as EmployeeJoinRow[]));
+    }
+
     const progByUser = new Map(((progress || []) as { user_id: string; watched_seconds: number; completed: boolean }[]).map(p => [p.user_id, p]));
     const attsByUser = new Map<string, { score: number; total: number }[]>();
     ((attempts || []) as { user_id: string; score: number; total: number }[]).forEach(a => {
@@ -1369,31 +1387,41 @@ function PerLessonWatch({ lessonId, runtime, courseId, search, showVideo, allowe
       arr.push(a);
       attsByUser.set(a.user_id, arr);
     });
-    const out = Array.from(enrolledIds)
-      .filter(uid => !allowedUserIds || allowedUserIds.has(uid))
-      .map(uid => {
-        const u = profById.get(uid);
-        const p = progByUser.get(uid);
+    const out = employees
+      .map(e => {
+        const authId = e.auth_user_id;
+        const signedIn = !!authId;
+        const p = authId ? progByUser.get(authId) : undefined;
+        const atts = authId ? (attsByUser.get(authId) || []) : [];
         const sec = p?.watched_seconds || 0;
-        const atts = attsByUser.get(uid) || [];
         const quizPct = atts.length ? atts.reduce((m, a) => Math.max(m, a.total ? Math.round((a.score/a.total)*100) : 0), 0) : 0;
         // `lesson_progress.completed` is component-aware — it's set only once
         // every component the lesson actually has (video watched + quiz passed,
         // where each exists) is satisfied. So it alone, plus the course-level
-        // agreement gate, decides "Completed". This also fixes quiz-less /
-        // video-less lessons that previously could never reach 100%.
-        const agreementOk = !agreementRequired || signedSet.has(uid);
-        const fullyCompleted = !!p?.completed && agreementOk;
+        // agreement gate, decides "Completed". A pending-login user can never
+        // be complete.
+        const agreementOk = !agreementRequired || (!!authId && signedSet.has(authId));
+        const fullyCompleted = signedIn && !!p?.completed && agreementOk;
         return {
-          id: uid, name: u?.full_name || u?.email || '—', email: u?.email || '', empId: u?.employee_id || '—',
-          department: u?.department, subDepartment: u?.sub_department, managerName: u?.manager_name, managerEmail: u?.manager_email, managerContact: u?.manager_contact,
+          // Use auth id when signed in (so progress/profile drill-down works);
+          // fall back to the employee row id for pending-login rows.
+          id: authId ?? e.id,
+          signedIn,
+          name: e.name || e.email || '—', email: e.email || '', empId: e.employee_id || '—',
+          department: e.departments?.name ?? null, subDepartment: e.sub_departments?.name ?? null,
+          managerName: e.manager?.name ?? null, managerEmail: e.manager?.email ?? null, managerContact: e.manager?.contact ?? null,
           sec, pct: runtime ? Math.min(100, Math.round((sec / runtime) * 100)) : 0,
           completed: fullyCompleted,
           quizPct,
           attempts: atts.length,
         };
-      });
-    out.sort((a, b) => b.sec - a.sec);
+      })
+      // Dept/manager filter (allowedUserIds) is auth-id based, so it only
+      // applies when active: keep matching signed-in rows. With no filter,
+      // show everyone — including pending-login users.
+      .filter(r => !allowedUserIds || (r.signedIn && allowedUserIds.has(r.id)));
+    // Signed-in first, then by watch time; pending-login users sink to the bottom.
+    out.sort((a, b) => Number(b.signedIn) - Number(a.signedIn) || b.sec - a.sec || a.name.localeCompare(b.name));
     const q = (search || '').toLowerCase().trim();
     setRows(!q ? out : out.filter(r => `${r.name} ${r.email} ${r.empId}`.toLowerCase().includes(q)));
   };
@@ -1426,7 +1454,7 @@ function PerLessonWatch({ lessonId, runtime, courseId, search, showVideo, allowe
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lessonId, runtime, courseId]);
 
-  if (rows.length === 0) return <div style={{padding:24, fontSize:13, color:'#8A97A8'}}>No learners enrolled yet.</div>;
+  if (rows.length === 0) return <div style={{padding:24, fontSize:13, color:'#8A97A8'}}>No learners assigned yet.</div>;
   return (
     <div style={{maxHeight:340, overflowY:'auto'}}>
       <table style={{width:'100%', borderCollapse:'collapse'}}>
@@ -1445,7 +1473,7 @@ function PerLessonWatch({ lessonId, runtime, courseId, search, showVideo, allowe
             <tr
               key={r.id}
               onClick={() => onOpenUser?.({ id: r.id, name: r.name, email: r.email, empId: r.empId, department: r.department, subDepartment: r.subDepartment, managerName: r.managerName, managerEmail: r.managerEmail, managerContact: r.managerContact, watchSec: r.sec, watchPct: r.pct, completion: r.completed ? 100 : 0, score: r.quizPct, attempts: r.attempts, status: r.completed ? 'active' : (r.sec > 0 ? 'at-risk' : 'inactive') })}
-              style={{borderBottom:'1px solid #F7F9FC', cursor: onOpenUser ? 'pointer' : 'default'}}
+              style={{borderBottom:'1px solid #F7F9FC', cursor: onOpenUser ? 'pointer' : 'default', opacity: r.signedIn ? 1 : 0.7}}
             >
               <td style={{padding:'10px 16px'}}>
                 <div style={{display:'flex', alignItems:'center', gap:10}}>
@@ -1466,9 +1494,11 @@ function PerLessonWatch({ lessonId, runtime, courseId, search, showVideo, allowe
               <td style={{padding:'10px 16px', fontSize:12, fontWeight:800, color: r.quizPct>=70?'#17A674':r.quizPct>0?'#C2261D':'#8A97A8'}}>{r.quizPct>0?`${r.quizPct}%`:'—'}</td>
               <td style={{padding:'10px 16px', fontSize:12, fontWeight:800, color:'#3B4A5E'}}>{r.attempts}</td>
               <td style={{padding:'10px 16px'}}>
-                {(() => { const started = r.sec > 0 || r.attempts > 0; return (
-                  <Chip color={r.completed?'#17A674':started?'#E08A1E':'#8A97A8'}>{r.completed?'Completed':started?'In progress':'Not started'}</Chip>
-                ); })()}
+                {(() => {
+                  if (!r.signedIn) return <Chip color="#8A97A8">Pending login</Chip>;
+                  const started = r.sec > 0 || r.attempts > 0;
+                  return <Chip color={r.completed?'#17A674':started?'#E08A1E':'#8A97A8'}>{r.completed?'Completed':started?'In progress':'Not started'}</Chip>;
+                })()}
               </td>
             </tr>
           ))}

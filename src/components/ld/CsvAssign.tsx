@@ -286,7 +286,7 @@ export function CsvAssignModal({ courseId, courseTitle, onClose, onAssigned, mod
         .select('employee_id')
         .eq('course_id', courseId)
         .in('employee_id', employeeIds);
-      const existingSet = new Set((existing ?? []).map((r: { employee_id: string }) => r.employee_id));
+      const existingSet = new Set((existing ?? []).map((r: { employee_id: string | null }) => r.employee_id));
 
       const toInsert = bucket.matched
         .filter(m => !existingSet.has(m.employee.id))
