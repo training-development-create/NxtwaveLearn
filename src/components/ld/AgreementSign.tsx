@@ -137,14 +137,17 @@ async function buildAndUploadStampedPdf(opts: {
 type Props = {
   courseId: string;
   courseTitle: string;
-  agreementPdfPath: string;
+  agreementPdfPath?: string | null;   // PDF-based agreement (optional)
+  agreementText?: string | null;      // text/consent-statement agreement (optional)
   fullName: string;
   onSigned: () => void;       // called after successful insert
   onCancel: () => void;
 };
 
-export function AgreementSign({ courseId, courseTitle, agreementPdfPath, fullName, onSigned, onCancel }: Props) {
+export function AgreementSign({ courseId, courseTitle, agreementPdfPath, agreementText, fullName, onSigned, onCancel }: Props) {
   const { user } = useAuth();
+  // Text agreement when there's no PDF path but a statement was provided.
+  const isTextAgreement = !agreementPdfPath && !!agreementText;
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [scrolledToBottom, setScrolledToBottom] = useState(false);
   const [agreed, setAgreed] = useState(false);
@@ -178,8 +181,9 @@ export function AgreementSign({ courseId, courseTitle, agreementPdfPath, fullNam
     } catch { /* ignore quota errors */ }
   }, [persistKey, typedName, agreed, scrolledToBottom]);
 
-  // Resolve a signed URL for the private agreements bucket.
+  // Resolve a signed URL for the private agreements bucket (PDF agreements only).
   useEffect(() => {
+    if (!agreementPdfPath) { setPdfUrl(null); return; }
     let cancelled = false;
     supabase.storage.from('agreements').createSignedUrl(agreementPdfPath, 60 * 60).then(({ data }) => {
       if (!cancelled) setPdfUrl(data?.signedUrl ?? null);
@@ -206,24 +210,27 @@ export function AgreementSign({ courseId, courseTitle, agreementPdfPath, fullNam
     setBusy(true); setErr(null);
     try {
       const signedAt = new Date();
-      // Try to stamp the signature onto a per-user copy of the PDF and store
-      // that copy. If stamping fails (network blip, missing bucket perms,
-      // PDF too unusual to parse), we fall back to recording the signature
-      // pointing at the original template — the audit trail is still intact.
-      const stampedPath = await buildAndUploadStampedPdf({
-        templatePath: agreementPdfPath,
-        courseId,
-        userId: user.id,
-        fullName: typedName.trim(),
-        signedAt,
-      });
-      const pathForRow = stampedPath || agreementPdfPath;
+      // PDF agreement: stamp the signature onto a per-user copy and store it.
+      // Text agreement: nothing to stamp — record the signature with a null
+      // path. The audit trail (name, timestamp, consent text, user agent) is
+      // identical either way, and analytics keys off the signature row.
+      let pathForRow: string | null = null;
+      if (agreementPdfPath) {
+        const stampedPath = await buildAndUploadStampedPdf({
+          templatePath: agreementPdfPath,
+          courseId,
+          userId: user.id,
+          fullName: typedName.trim(),
+          signedAt,
+        });
+        pathForRow = stampedPath || agreementPdfPath;
+      }
       const { error } = await supabase.from('agreement_signatures').insert({
         user_id: user.id,
         course_id: courseId,
         agreement_pdf_path: pathForRow,
         signed_full_name: typedName.trim(),
-        signed_text: 'I have read and agree',
+        signed_text: isTextAgreement ? (agreementText ?? 'I have read and agree') : 'I have read and agree',
         user_agent: typeof navigator !== 'undefined' ? navigator.userAgent : null,
       });
       if (error) throw error;
@@ -266,6 +273,17 @@ export function AgreementSign({ courseId, courseTitle, agreementPdfPath, fullNam
                 {scrolledToBottom
                   ? '✓ End of document reached — you may sign below.'
                   : 'Scroll down through the document to enable signing.'}
+              </div>
+            </>
+          ) : isTextAgreement ? (
+            <>
+              <div style={{padding:'28px 32px', background:'#fff', fontSize:14, lineHeight:1.7, color:'#0A1F3D', whiteSpace:'pre-wrap'}}>
+                {agreementText}
+              </div>
+              <div style={{height:60, padding:'18px 28px', textAlign:'center', fontSize:12, color: scrolledToBottom ? '#17A674' : '#5B6A7D', background:'#F7F9FC'}}>
+                {scrolledToBottom
+                  ? '✓ End reached — you may sign below.'
+                  : 'Scroll to the end of the statement to enable signing.'}
               </div>
             </>
           ) : (

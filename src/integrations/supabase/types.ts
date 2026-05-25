@@ -59,6 +59,7 @@ export type Database = {
         Row: {
           agreement_pdf_path: string | null
           agreement_required: boolean
+          agreement_text: string | null
           blurb: string
           created_at: string
           created_by: string | null
@@ -77,6 +78,7 @@ export type Database = {
         Insert: {
           agreement_pdf_path?: string | null
           agreement_required?: boolean
+          agreement_text?: string | null
           blurb?: string
           created_at?: string
           created_by?: string | null
@@ -95,6 +97,7 @@ export type Database = {
         Update: {
           agreement_pdf_path?: string | null
           agreement_required?: boolean
+          agreement_text?: string | null
           blurb?: string
           created_at?: string
           created_by?: string | null

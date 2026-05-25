@@ -8,7 +8,7 @@ import type { Nav, AppState } from "./App";
 
 export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppState; setState: (s: AppState) => void }) {
   const { user, profile } = useAuth();
-  const [course, setCourse] = useState<{ id: string; title: string; agreement_required: boolean; agreement_pdf_path: string | null } | null>(null);
+  const [course, setCourse] = useState<{ id: string; title: string; agreement_required: boolean; agreement_pdf_path: string | null; agreement_text: string | null } | null>(null);
   const [hasSignedAgreement, setHasSignedAgreement] = useState(false);
   const { lessons } = useCourseLessons(state.course, user?.id ?? null);
   const activeLessonId = state.activeLesson;
@@ -94,7 +94,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
   }, [questions.length]);
   useEffect(() => {
     if (!state.course) return;
-    supabase.from('courses').select('id, title, agreement_required, agreement_pdf_path').eq('id', state.course).maybeSingle().then(({ data }) => setCourse(data as typeof course));
+    supabase.from('courses').select('id, title, agreement_required, agreement_pdf_path, agreement_text').eq('id', state.course).maybeSingle().then(({ data }) => setCourse(data as typeof course));
   }, [state.course]);
 
   // Has the learner already signed the agreement for this course?
@@ -158,8 +158,8 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
   }
 
   if (stage === 'agreement') {
-    if (!course.agreement_pdf_path) {
-      // No agreement uploaded for this course — skip straight to next lesson.
+    if (!course.agreement_pdf_path && !course.agreement_text) {
+      // No agreement (PDF or text) for this course — skip straight to next lesson.
       if (nextLesson) { setState({ ...state, activeLesson: nextLesson.id }); onNav('player'); }
       else { onNav('courses'); }
       return null;
@@ -169,6 +169,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
         courseId={course.id}
         courseTitle={course.title}
         agreementPdfPath={course.agreement_pdf_path}
+        agreementText={course.agreement_text}
         fullName={profile?.full_name || ''}
         onSigned={async () => {
           setHasSignedAgreement(true);
@@ -266,7 +267,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
                 {pass ? (
                   // Compliance gate: if the course requires an agreement and
                   // the learner hasn't signed yet, route to the agreement step.
-                  course.agreement_required && course.agreement_pdf_path && !hasSignedAgreement
+                  course.agreement_required && (course.agreement_pdf_path || course.agreement_text) && !hasSignedAgreement
                     ? <Btn size="lg" onClick={() => setStage('agreement')}>Continue to agreement ✍️ →</Btn>
                     : <Btn size="lg" onClick={onNext}>{nextLesson ? 'Start next video →' : 'Back to courses →'}</Btn>
                 ) : (

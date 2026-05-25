@@ -51,6 +51,10 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
   const [readingFile, setReadingFile] = useState<File | null>(null);
 
   const [questions, setQuestions] = useState<Q[]>([]);
+  // Consent/acknowledgment statement detected at the end of the assessment doc
+  // (e.g. "By checking the box… I have read and agree"). Stored as the course's
+  // text agreement on publish so the sign-to-complete flow applies.
+  const [detectedAgreement, setDetectedAgreement] = useState<string | null>(null);
   const [parsing, setParsing] = useState(false);
   const [parseError, setParseError] = useState<string | null>(null);
   const [active, setActive] = useState(0);
@@ -466,6 +470,9 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
       if (!parsed.length) throw new Error('AI could not find any questions in this file.');
       setQuestions(parsed);
       setActive(0);
+      // The parser also returns a trailing consent statement (if the doc has
+      // one) — captured here and saved as the course's text agreement on publish.
+      setDetectedAgreement((data?.agreementText as string | null) ?? null);
     } catch (e) {
       setParseError((e as Error).message || 'Failed to parse questions');
     } finally { setParsing(false); }
@@ -645,6 +652,18 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
           .update({ agreement_pdf_path: aPath, agreement_required: true })
           .eq('id', courseId);
         if (cUpErr) throw cUpErr;
+      }
+
+      // ----- Optional TEXT agreement (consent statement detected in the doc) -----
+      // When the assessment document ends with a consent block, store it as the
+      // course's text agreement so the same sign-to-complete + analytics flow
+      // applies (no PDF needed). Soft-skip if the column doesn't exist yet.
+      if (detectedAgreement && detectedAgreement.trim()) {
+        const { error: tErr } = await supabase.from('courses')
+          .update({ agreement_text: detectedAgreement.trim(), agreement_required: true })
+          .eq('id', courseId);
+        if (tErr && !/agreement_text|column .* does not exist/i.test(tErr.message)) throw tErr;
+        if (tErr) console.warn('[AdminUpload] courses.agreement_text missing — apply migration 20260525130000_course_agreement_text.sql');
       }
 
       // ----- Write course_assignments for the picker selections.

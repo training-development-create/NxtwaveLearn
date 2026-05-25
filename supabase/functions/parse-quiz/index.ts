@@ -69,6 +69,39 @@ function decodeXml(s: string): string {
     .replace(/&amp;/g, '&');
 }
 
+// Detect a trailing consent / acknowledgment block, e.g.:
+//   "35. By checking the box below, I acknowledge and confirm the following:
+//    1. … 2. … ☐ I have read and agree to all of the above."
+// This is NOT a multiple-choice question (no options), so the AI drops it.
+// We surface it separately as `agreementText` so the admin flow can store it
+// as the course's text agreement (sign-to-complete + analytics consent).
+function detectConsentBlock(text: string): string | null {
+  const agreeMatch = /i\s+have\s+read\s+and\s+agree/i.exec(text);
+  if (!agreeMatch) return null;
+
+  // Start of the block: last "By checking the box" / "acknowledge and confirm"
+  // before the agree line; else a reasonable window back.
+  const before = text.slice(0, agreeMatch.index);
+  const startRe = /(by\s+checking\s+the\s+box|acknowledge\s+and\s+confirm)/gi;
+  let startIdx = -1;
+  let m: RegExpExecArray | null;
+  while ((m = startRe.exec(before)) !== null) startIdx = m.index;
+  if (startIdx < 0) startIdx = Math.max(0, agreeMatch.index - 1800);
+
+  // Pull in a leading "NN." question number on the same line if present.
+  const lineStart = before.lastIndexOf("\n", startIdx) + 1;
+  if (/^\s*\d+\s*[.)]\s*$/.test(text.slice(lineStart, startIdx))) startIdx = lineStart;
+
+  // End at the end of the agree line.
+  const afterAgree = text.slice(agreeMatch.index);
+  const nl = afterAgree.indexOf("\n");
+  const endIdx = agreeMatch.index + (nl >= 0 ? nl : afterAgree.length);
+
+  let block = text.slice(startIdx, endIdx).trim();
+  block = block.replace(/^\s*\d+\s*[.)]\s*/, "").replace(/[☐☑]|\[\s*\]/g, "").trim();
+  return block.length >= 20 ? block : null;
+}
+
 // ----- Tiny ZIP reader (central directory) -----------------------------------
 type ZipEntry = { name: string; data: Uint8Array; compressed: boolean };
 function parseZip(buf: Uint8Array): ZipEntry[] {
@@ -342,9 +375,13 @@ Deno.serve(async (req) => {
 
     let userContent: unknown;
     let geminiParts: unknown[] = [];
+    // Captured for consent-block detection (DOCX/TXT only — PDF goes straight
+    // to the model as bytes, so no plain text is available here).
+    let extractedText = "";
     if (isText) {
       const text = new TextDecoder().decode(bytes).slice(0, 200_000);
       if (!text.trim()) return err(400, "The text file is empty.");
+      extractedText = text;
       userContent = [{ type: 'text', text: `Filename: ${fileName || 'upload.txt'}\n\n--- FILE CONTENT ---\n${text}` }];
       geminiParts = [{ text: `Filename: ${fileName || "upload.txt"}\n\n--- FILE CONTENT ---\n${text}` }];
     } else if (isDocx) {
@@ -355,6 +392,7 @@ Deno.serve(async (req) => {
       }
       text = text.slice(0, 200_000);
       if (!text.trim()) return err(400, "The DOCX file appears to be empty or unreadable.");
+      extractedText = text;
       userContent = [{ type: 'text', text: `Filename: ${fileName || 'upload.docx'}\n\n--- FILE CONTENT (extracted from DOCX) ---\n${text}` }];
       geminiParts = [{ text: `Filename: ${fileName || "upload.docx"}\n\n--- FILE CONTENT (extracted from DOCX) ---\n${text}` }];
     } else if (isPdf) {
@@ -403,7 +441,11 @@ Deno.serve(async (req) => {
       }
     }
     if (!questions.length) return err(400, "AI couldn't find any multiple-choice questions in this file.");
-    return new Response(JSON.stringify({ questions }), {
+    // Detect a trailing consent/acknowledgment statement (the doc's final
+    // checkbox item) so the admin flow can store it as the course's text
+    // agreement. Returned separately — it is NOT an MCQ.
+    const agreementText = extractedText ? detectConsentBlock(extractedText) : null;
+    return new Response(JSON.stringify({ questions, agreementText }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e) {
