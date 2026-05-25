@@ -338,7 +338,7 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
     return <div style={{padding:40}}><EmptyState icon="🔒" title="You don't have access to this course" sub="This course wasn't assigned to you. Please contact your admin if this is unexpected." action={<Btn onClick={()=>onNav('courses')}>Back to my courses</Btn>}/></div>;
   }
   if (lessons.length === 0) {
-    return <div style={{padding:40}}><EmptyState icon="📼" title="No videos yet" sub="This course doesn't have any lessons published yet." action={<Btn variant="ghost" onClick={()=>onNav('courses')}>Back to courses</Btn>}/></div>;
+    return <div style={{padding:40}}><EmptyState icon="📼" title="No videos yet" sub="This course doesn't have any lessons published yet." action={<Btn variant="ghost" onClick={()=>onNav('courses')}>Back to Home</Btn>}/></div>;
   }
   if (!lesson) return null;
 

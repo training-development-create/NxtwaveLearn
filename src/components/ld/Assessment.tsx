@@ -15,7 +15,9 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
   const nextLesson = lessons[lessonIdx + 1];
   const { questions, loading } = useMCQ(activeLessonId);
 
-  const [stage, setStage] = useState<'intro'|'quiz'|'result'>('intro');
+  // No separate intro/start card — the quiz begins immediately (the Player's
+  // start card is the single entry point). Only 'quiz' and 'result' remain.
+  const [stage, setStage] = useState<'quiz'|'result'>('quiz');
   const [idx, setIdx] = useState(0);
   const [answers, setAnswers] = useState<(number|null)[]>([]);
   const [flagged, setFlagged] = useState<Set<number>>(new Set());
@@ -24,14 +26,6 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
   // indices are shown. Correct answers from the previous attempt are kept
   // intact in `answers` so scoring still uses the full array.
   const [retakeIndices, setRetakeIndices] = useState<number[] | null>(null);
-
-  // Safety guard: if retakeIndices is set (we're in a retake) but somehow
-  // stage is 'intro' (e.g. stale localStorage), jump straight to quiz.
-  useEffect(() => {
-    if (retakeIndices !== null && stage === 'intro') {
-      setStage('quiz');
-    }
-  }, [retakeIndices, stage]);
 
   // Persistence — quiz state survives tab refresh / tab switch.
   // Key per (user, lesson). Cleared on submit so a retake starts fresh.
@@ -42,8 +36,8 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
     try {
       const raw = localStorage.getItem(persistKey);
       if (raw) {
-        const saved = JSON.parse(raw) as { stage?: typeof stage; idx?: number; answers?: (number|null)[]; flagged?: number[]; retakeIndices?: number[] | null };
-        if (saved.stage) setStage(saved.stage);
+        const saved = JSON.parse(raw) as { stage?: string; idx?: number; answers?: (number|null)[]; flagged?: number[]; retakeIndices?: number[] | null };
+        if (saved.stage === 'quiz' || saved.stage === 'result') setStage(saved.stage);
         if (typeof saved.idx === 'number') setIdx(saved.idx);
         if (Array.isArray(saved.answers)) setAnswers(saved.answers);
         if (Array.isArray(saved.flagged)) setFlagged(new Set(saved.flagged));
@@ -95,13 +89,13 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
   }, [state.course]);
 
   if (!state.course || !state.activeLesson) {
-    return <div style={{padding:40}}><EmptyState icon="🧭" title="No assessment selected" sub="Pick a video first." action={<Btn onClick={()=>onNav('courses')}>Back to courses</Btn>}/></div>;
+    return <div style={{padding:40}}><EmptyState icon="🧭" title="No assessment selected" sub="Pick a video first." action={<Btn onClick={()=>onNav('courses')}>Back to Home</Btn>}/></div>;
   }
   if (loading || !course || !lesson) {
     return <div style={{padding:40, color:'#5B6A7D', fontSize:13}}>Loading…</div>;
   }
   if (questions.length === 0) {
-    return <div style={{padding:40}}><EmptyState icon="📝" title="No quiz for this lesson" sub="Your admin hasn't added questions for this lesson yet." action={<Btn onClick={()=>onNav('courses')}>Back to courses</Btn>}/></div>;
+    return <div style={{padding:40}}><EmptyState icon="📝" title="No quiz for this lesson" sub="Your admin hasn't added questions for this lesson yet." action={<Btn onClick={()=>onNav('courses')}>Back to Home</Btn>}/></div>;
   }
 
   // Real lesson title, or null when it's the blank "Untitled Lesson" default.
@@ -110,41 +104,6 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
   const lessonName = lesson.title && lesson.title !== 'Untitled Lesson' ? lesson.title : null;
   // No video anywhere in this course → never say "Video" in the assessment UI.
   const courseHasVideo = lessons.some(l => !!l.video_path || l.duration > 0);
-
-  if (stage === 'intro') {
-    return (
-      <div style={{padding:'28px 40px', maxWidth:860, animation:'fadeUp .3s'}}>
-        <Card pad={0} style={{overflow:'hidden'}}>
-          <div style={{padding:'36px 40px', background:'#0A1F3D', color:'#fff', position:'relative', overflow:'hidden'}}>
-            <div style={{position:'absolute', top:-60, right:-60, width:240, height:240, borderRadius:999, background:'#0072FF', opacity:.22, filter:'blur(70px)'}}/>
-            <div style={{position:'relative'}}>
-              <div style={{fontSize:11, fontWeight:600, letterSpacing:'.12em', color:'#7FDBFF', textTransform:'uppercase'}}>Assessment{lessonName ? ` · ${course.title}` : ''}</div>
-              <h2 style={{fontSize:30, color:'#fff', margin:'10px 0 8px', letterSpacing:'-.02em', fontWeight:700}}>{lessonName || course.title}</h2>
-              <p style={{color:'#9EC9F0', fontSize:14, margin:0, lineHeight:1.55, maxWidth:540}}>Answer {questions.length} questions. <strong style={{color:'#fff'}}>Every answer must be correct (100%) to pass.</strong> Any wrong answers can be re-attempted without restarting the whole quiz.</p>
-            </div>
-          </div>
-          <div style={{padding:'24px 40px', display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:20, borderBottom:'1px solid #EEF2F7'}}>
-            {[[String(questions.length),'Questions'],['100%','Required to pass'],['∞','Attempts allowed']].map(([k,v]) => (
-              <div key={v}>
-                <div style={{fontSize:22, fontWeight:700, color:'#0A1F3D', letterSpacing:'-.02em'}}>{k}</div>
-                <div style={{fontSize:12, color:'#5B6A7D', marginTop:2}}>{v}</div>
-              </div>
-            ))}
-          </div>
-          <div style={{padding:'22px 40px 28px'}}>
-            <ul style={{margin:0, padding:0, listStyle:'none', display:'flex', flexDirection:'column', gap:8, fontSize:13, color:'#3B4A5E'}}>
-              {['You can flag questions and come back','Navigate freely between questions','Wrong answers can be re-attempted without restarting the full quiz','You must answer every question correctly to pass'].map(s => (
-                <li key={s} style={{display:'flex', gap:10}}><span style={{color:'#17A674'}}>✓</span>{s}</li>
-              ))}
-            </ul>
-            <div style={{marginTop:22, display:'flex', gap:10}}>
-              <Btn size="lg" onClick={()=>setStage('quiz')}>Start Quiz →</Btn>
-            </div>
-          </div>
-        </Card>
-      </div>
-    );
-  }
 
   if (stage === 'result') {
     const correct = answers.filter((a,i) => a === questions[i].correct).length;
@@ -224,11 +183,11 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
               )}
               <div style={{marginTop:22, display:'flex', gap:10, flexWrap:'wrap'}}>
                 {pass ? (
-                  <Btn size="lg" onClick={onNext}>{nextLesson ? 'Start next lesson →' : 'Back to courses →'}</Btn>
+                  <Btn size="lg" onClick={onNext}>{nextLesson ? 'Start next lesson →' : 'Back to Home →'}</Btn>
                 ) : (
                   <Btn size="lg" onClick={onRetryWrong}>Re-attempt wrong questions →</Btn>
                 )}
-                <Btn variant="ghost" size="lg" onClick={()=>onNav('courses')}>Back to courses</Btn>
+                <Btn variant="ghost" size="lg" onClick={()=>onNav('courses')}>Back to Home</Btn>
               </div>
             </div>
           </Card>
@@ -320,7 +279,17 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
             </button>
           </div>
           <div style={{padding:'26px 30px 22px'}}>
-            <h3 style={{fontSize:19, color:'#0A1F3D', letterSpacing:'-.01em', fontWeight:700, lineHeight:1.35, margin:0}}>{q.q}</h3>
+            {q.options.length === 1 ? (
+              // Consent/acknowledgment statement — normal weight, each line on
+              // its own row with spacing (the lead-in line is lightly emphasised).
+              <div style={{display:'flex', flexDirection:'column', gap:12}}>
+                {q.q.split('\n').map(l => l.trim()).filter(Boolean).map((line, li) => (
+                  <div key={li} style={{fontSize:14, color:'#3B4A5E', lineHeight:1.65, fontWeight: li === 0 ? 600 : 400}}>{line}</div>
+                ))}
+              </div>
+            ) : (
+              <h3 style={{fontSize:19, color:'#0A1F3D', letterSpacing:'-.01em', fontWeight:700, lineHeight:1.35, margin:0}}>{q.q}</h3>
+            )}
             <div style={{display:'flex', flexDirection:'column', gap:10, marginTop:20}}>
               {q.options.length === 1 ? (
                 // Consent/acknowledgment question — a single checkbox to tick.
