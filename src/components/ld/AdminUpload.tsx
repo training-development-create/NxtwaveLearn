@@ -83,8 +83,7 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
   const [missingVideoName, setMissingVideoName] = useState<string | null>(null);
   const [missingAgreementName, setMissingAgreementName] = useState<string | null>(null);
   const [missingReadingName, setMissingReadingName] = useState<string | null>(null);
-  const [assessmentFile, setAssessmentFile] = useState<File | null>(null);
-  const [missingAssessmentFileName, setMissingAssessmentFileName] = useState<string | null>(null);
+  // (Assessment document upload removed — admin only uses AI quiz extraction now.)
 
   // ----- Assignment picker state -----
   type Dept = { id: string; name: string };
@@ -303,7 +302,6 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
         assignManagerIds?: string[]; assignEmployeeIds?: string[];
         csvMatched?: CsvMatchedEmployee[];
         videoFileName?: string; agreementFileName?: string; readingFileName?: string;
-        assessmentFileName?: string;
       };
       if (typeof s.step === 'number') setStep(s.step);
       if (s.mode) setMode(s.mode);
@@ -327,7 +325,6 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
       if (s.videoFileName) setMissingVideoName(s.videoFileName);
       if (s.agreementFileName) setMissingAgreementName(s.agreementFileName);
       if (s.readingFileName) setMissingReadingName(s.readingFileName);
-      if (s.assessmentFileName) setMissingAssessmentFileName(s.assessmentFileName);
       // Try to restore actual File blobs from IndexedDB so the admin doesn't
       // need to re-attach. Async — the missing-name hint stays visible until
       // the file is found (or, if not found, the admin can re-attach).
@@ -336,7 +333,6 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
         getFile(`${base}:video`).then(f => { if (f) { setVideoFile(f); setMissingVideoName(null); } });
         getFile(`${base}:agreement`).then(f => { if (f) { setAgreementFile(f); setMissingAgreementName(null); } });
         getFile(`${base}:reading`).then(f => { if (f) { setReadingFile(f); setMissingReadingName(null); } });
-        getFile(`${base}:assessment`).then(f => { if (f) { setAssessmentFile(f); setMissingAssessmentFileName(null); } });
       }
       // Tell the user we restored. Auto-dismiss after 4s.
       const hadAnything = (s.courseTitle || s.lessonTitle || (s.questions && s.questions.length) || s.videoFileName);
@@ -367,7 +363,6 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
         videoFileName: videoFile?.name ?? missingVideoName ?? null,
         agreementFileName: agreementFile?.name ?? missingAgreementName ?? null,
         readingFileName: readingFile?.name ?? missingReadingName ?? null,
-        assessmentFileName: assessmentFile?.name ?? missingAssessmentFileName ?? null,
       };
       localStorage.setItem(persistKey, JSON.stringify(snapshot));
     } catch (e) {
@@ -377,18 +372,15 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
   }, [persistKey, step, mode, existingCourseId, courseTitle, tag, hue, emoji, blurb, dueInDays,
       lessonTitle, videoDuration, questions, active,
       assignAll, assignDeptIds, assignSubDeptIds, assignManagerIds, assignEmployeeIds,
-      csvMatched, videoFile, agreementFile, readingFile, assessmentFile,
-      missingVideoName, missingAgreementName, missingReadingName, missingAssessmentFileName]);
+      csvMatched, videoFile, agreementFile, readingFile,
+      missingVideoName, missingAgreementName, missingReadingName]);
 
   // Clear the saved missing-name hints once the admin re-picks a file.
   useEffect(() => { if (videoFile) setMissingVideoName(null); }, [videoFile]);
   useEffect(() => { if (agreementFile) setMissingAgreementName(null); }, [agreementFile]);
   useEffect(() => { if (readingFile) setMissingReadingName(null); }, [readingFile]);
-  useEffect(() => { if (assessmentFile) setMissingAssessmentFileName(null); }, [assessmentFile]);
 
   // Persist file blobs to IndexedDB so they survive tab switches & reloads.
-  // Only runs after the restore effect has flipped restoredRef so we don't
-  // clobber a saved blob with the initial null on first render.
   useEffect(() => {
     if (!user || !restoredRef.current) return;
     putFile(`${user.id}:video`, videoFile);
@@ -401,10 +393,6 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
     if (!user || !restoredRef.current) return;
     putFile(`${user.id}:reading`, readingFile);
   }, [user, readingFile]);
-  useEffect(() => {
-    if (!user || !restoredRef.current) return;
-    putFile(`${user.id}:assessment`, assessmentFile);
-  }, [user, assessmentFile]);
 
   // Read duration from chosen file
   const onPickVideo = (f: File | null) => {
@@ -595,28 +583,6 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
         }
       }
 
-      // Optional assessment file — stored in the same public bucket as reading materials.
-      let assessmentFilePath: string | null = null;
-      let assessmentFileNameSaved: string | null = null;
-      if (assessmentFile) {
-        const afExt = assessmentFile.name.split('.').pop() || 'pdf';
-        const afPath = `${courseId}/assessment-${crypto.randomUUID()}.${afExt}`;
-        const { error: afUpErr } = await supabase.storage.from('reading-materials').upload(afPath, assessmentFile, {
-          upsert: false,
-          contentType: assessmentFile.type || 'application/octet-stream',
-        });
-        if (afUpErr) {
-          if (/bucket not found/i.test(afUpErr.message)) {
-            console.warn('[AdminUpload] reading-materials bucket missing — skipping assessment file');
-          } else {
-            throw afUpErr;
-          }
-        } else {
-          assessmentFilePath = afPath;
-          assessmentFileNameSaved = assessmentFile.name;
-        }
-      }
-
       // Insert lesson. Try with all optional columns first; if any column is
       // missing (migration not applied), fall back to base columns only.
       let lesson: { id: string } | null = null;
@@ -626,7 +592,6 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
           course_id: courseId, title: lessonTitle2, duration_seconds: dur,
           video_path: videoPath, position,
           reading_material_path: readingPath, reading_material_name: readingName,
-          assessment_file_path: assessmentFilePath, assessment_file_name: assessmentFileNameSaved,
         }).select('id').single();
         if (e2) {
           if (/assessment_file_|reading_material_|column .* does not exist/i.test(e2.message)) {
@@ -923,11 +888,11 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
     setStep(1); setMode('new'); setExistingCourseId('');
     setCourseTitle(''); setTag('Mandatory'); setHue(HUES[0]); setEmoji(EMOJIS[0]); setBlurb(''); setDueInDays('');
     setLessonTitle(''); setVideoFile(null); setVideoDuration(0); setUploadPct(0);
-    setAgreementFile(null); setReadingFile(null); setAssessmentFile(null);
+    setAgreementFile(null); setReadingFile(null);
     setQuestions([]); setActive(0); setError(null); setParseError(null);
     setAssignAll(true); setAssignDeptIds([]); setAssignSubDeptIds([]); setAssignManagerIds([]); setAssignEmployeeIds([]);
     setCsvMatched([]);
-    setMissingVideoName(null); setMissingAgreementName(null); setMissingReadingName(null); setMissingAssessmentFileName(null);
+    setMissingVideoName(null); setMissingAgreementName(null); setMissingReadingName(null);
     setResumed(false);
   };
 
@@ -1087,49 +1052,11 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
           {step===3 && (
             <Card pad={0}>
               <div style={{padding:'20px 24px', borderBottom:'1px solid #EEF2F7'}}>
-                <h3 style={{fontSize:18, color:'#002A4B', margin:0, fontWeight:800}}>Assessment <span style={{fontWeight:500, color:'#8A97A8', fontSize:14}}>(optional)</span></h3>
-                <div style={{fontSize:13, color:'#5B6A7D', marginTop:4}}>Upload the assessment document for learners, or let AI extract MCQ questions — or both. All optional.</div>
+                <h3 style={{fontSize:18, color:'#002A4B', margin:0, fontWeight:800}}>AI Quiz Builder <span style={{fontWeight:500, color:'#8A97A8', fontSize:14}}>(optional)</span></h3>
+                <div style={{fontSize:13, color:'#5B6A7D', marginTop:4}}>Upload a PDF, DOCX or TXT with questions and answers — AI will extract them into MCQ questions automatically.</div>
               </div>
               <div style={{padding:24}}>
-
-                {/* Direct assessment file upload — stored as-is for learner reference */}
-                <div style={{marginBottom:20}}>
-                  <Label>Assessment document <span style={{fontWeight:500, color:'#8A97A8'}}>(optional)</span></Label>
-                  <div style={{fontSize:12, color:'#5B6A7D', marginBottom:8}}>Learners will see a download link alongside the video. PDF, DOCX, PPTX or TXT.</div>
-                  <label style={{display:'block', padding:18, border:`2px dashed ${assessmentFile?'#17A674':'#CCEAFF'}`, background: assessmentFile?'#F0FCF5':'#F7FBFF', borderRadius:10, cursor:'pointer', textAlign:'center'}}>
-                    <input type="file" accept=".pdf,.docx,.doc,.txt,.pptx,.ppt" style={{display:'none'}} onChange={e=>setAssessmentFile(e.target.files?.[0] || null)}/>
-                    {assessmentFile ? (
-                      <div>
-                        <div style={{fontSize:24, marginBottom:4}}>📝</div>
-                        <div style={{fontSize:13, fontWeight:700, color:'#0A1F3D'}}>{assessmentFile.name}</div>
-                        <div style={{fontSize:11, color:'#5B6A7D', marginTop:2}}>{(assessmentFile.size/1024).toFixed(0)} KB · click to change</div>
-                      </div>
-                    ) : missingAssessmentFileName ? (
-                      <div>
-                        <div style={{fontSize:24, marginBottom:4}}>📎</div>
-                        <div style={{fontSize:13, fontWeight:700, color:'#9A6708'}}>Re-attach: {missingAssessmentFileName}</div>
-                        <div style={{fontSize:11, color:'#5B6A7D', marginTop:2}}>Pick the file again to keep it in this draft, or skip — it's optional.</div>
-                      </div>
-                    ) : (
-                      <div>
-                        <div style={{fontSize:24, marginBottom:4}}>📝</div>
-                        <div style={{fontSize:13, fontWeight:700, color:'#0A1F3D'}}>Upload assessment document</div>
-                        <div style={{fontSize:11, color:'#5B6A7D', marginTop:2}}>Learners can open this file alongside the video</div>
-                      </div>
-                    )}
-                  </label>
-                  {assessmentFile && (
-                    <button type="button" onClick={()=>setAssessmentFile(null)} style={{marginTop:8, padding:'4px 10px', background:'#fff', border:'1px solid #FCE1DE', color:'#C2261D', borderRadius:6, fontSize:11, fontWeight:600, cursor:'pointer'}}>Remove assessment file</button>
-                  )}
-                </div>
-
-                {/* Divider */}
-                <div style={{display:'flex', alignItems:'center', gap:10, marginBottom:18}}>
-                  <div style={{flex:1, height:1, background:'#EEF2F7'}}/>
-                  <span style={{fontSize:11, fontWeight:700, color:'#8A97A8', letterSpacing:'.06em', textTransform:'uppercase'}}>AI Quiz Builder (optional)</span>
-                  <div style={{flex:1, height:1, background:'#EEF2F7'}}/>
-                </div>
-                <div style={{fontSize:12, color:'#5B6A7D', marginBottom:12}}>Upload a PDF, DOCX or TXT with questions and answers — AI will parse them into MCQ questions automatically.</div>
+                <div style={{fontSize:12, color:'#5B6A7D', marginBottom:12}}>Write questions freely (Q1, A) B) C) D), mark the answer) — AI handles the rest. Questions can be reviewed and edited before publishing.</div>
 
                 <label style={{display:'block', padding:24, border:'2px dashed #CCEAFF', background:'#F7FBFF', borderRadius:12, cursor: parsing?'wait':'pointer', textAlign:'center', opacity: parsing?.7:1}}>
                   <input type="file" accept=".pdf,.docx,.doc,.txt" style={{display:'none'}} disabled={parsing} onChange={e=>onPickQuiz(e.target.files?.[0] || null)}/>

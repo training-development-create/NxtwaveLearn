@@ -423,6 +423,7 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
       {showComplianceModal && (
         <ComplianceWizardModal
           courseTitle={course.title}
+          hasVideo={hasVideo}
           agreementRequired={agreementGate}
           onAcknowledge={acknowledgeCompliance}
         />
@@ -433,7 +434,7 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
           <span>›</span>
           <a style={{color:'#3B4A5E'}}>{course.title}</a>
           <span>›</span>
-          <span style={{color:'#0A1F3D', fontWeight:600}}>Video {lessonIdx+1}</span>
+          <span style={{color:'#0A1F3D', fontWeight:600}}>{hasVideo ? `Video ${lessonIdx+1}` : `Lesson ${lessonIdx+1}`}</span>
         </div>
 
         {/* Compliance step indicator: Watch → Assessment → Sign → Done */}
@@ -454,7 +455,9 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
             <div style={{flex:1}}>
               <div style={{fontSize:13, fontWeight:700, color:'#9A6708'}}>Agreement signing — incomplete</div>
               <div style={{fontSize:12, color:'#9A6708', marginTop:2}}>
-                You've watched the video and passed the assessment, but the course will not be marked complete until you sign the agreement.
+                {hasVideo
+                  ? "You've watched the video and passed the assessment, but the course will not be marked complete until you sign the agreement."
+                  : "You've passed the assessment, but the course will not be marked complete until you sign the agreement."}
               </div>
             </div>
             <Btn size="sm" onClick={() => onNav('assessment')}>Sign agreement</Btn>
@@ -494,6 +497,36 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
             </div>
           );
         })()}
+
+        {/* No-video: show a large centered assessment CTA in the main content
+            area so it's front-and-centre, not tucked in the narrow right rail. */}
+        {!hasVideo && (
+          <div style={{marginTop:20, maxWidth:540, margin:'20px auto 0'}}>
+            <Card pad={0} style={{overflow:'hidden', border:'1.5px solid #CCEAFF', boxShadow:'0 4px 24px rgba(0,114,255,.08)'}}>
+              <div style={{padding:'36px 40px 28px', background:'linear-gradient(135deg,#0A1F3D,#0072FF)', color:'#fff', textAlign:'center', position:'relative', overflow:'hidden'}}>
+                <div style={{position:'absolute', top:-40, right:-40, width:180, height:180, borderRadius:999, background:'rgba(255,255,255,.07)', pointerEvents:'none'}}/>
+                <div style={{width:64, height:64, borderRadius:18, background:'rgba(255,255,255,.15)', display:'grid', placeItems:'center', fontSize:26, margin:'0 auto'}}>📝</div>
+                <div style={{fontSize:11, fontWeight:700, color:'#9EC9F0', letterSpacing:'.12em', textTransform:'uppercase', marginTop:16}}>Step 1 · Assessment</div>
+                <div style={{fontSize:22, fontWeight:800, color:'#fff', marginTop:6, letterSpacing:'-.02em', lineHeight:1.2}}>{lesson.title}</div>
+                <div style={{fontSize:13, color:'#C8DDF4', marginTop:8, lineHeight:1.5}}>
+                  {stepQuizDone
+                    ? 'You\'ve already passed this assessment.'
+                    : agreementGate
+                      ? 'Answer all questions correctly to pass, then sign the agreement to complete the course.'
+                      : 'Answer all questions correctly to complete this lesson.'}
+                </div>
+              </div>
+              <div style={{padding:'22px 40px 28px', textAlign:'center', display:'flex', flexDirection:'column', gap:10, alignItems:'center'}}>
+                {stepQuizDone && (
+                  <div style={{padding:'8px 18px', background:'#E8F7EF', border:'1px solid #C5EBD7', borderRadius:10, fontSize:13, fontWeight:700, color:'#0F7C57', display:'inline-flex', alignItems:'center', gap:8}}>
+                    <span>✓</span> Assessment passed
+                  </div>
+                )}
+                <Btn size="lg" onClick={goToQuiz}>{stepQuizDone ? 'Retake assessment' : 'Start assessment →'}</Btn>
+              </div>
+            </Card>
+          </div>
+        )}
 
         {/* Video player — only rendered when the lesson has a video.
             Assessment-only lessons skip this block entirely. */}
@@ -620,10 +653,12 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
                   <div style={{flex:1, minWidth:0}}>
                     <div style={{fontSize:13, fontWeight: active?700:600, color: active?'#0A1F3D':'#3B4A5E'}}>{l.title}</div>
                     <div style={{fontSize:11, color:'#8A97A8', marginTop:2, display:'flex', gap:8, alignItems:'center'}}>
-                      <span>{fmt(l.duration)}</span>
-                      {bestPass > 0 && <span style={{color:'#17A674', fontWeight:600}}>· Assessment {bestPass}%</span>}
+                      {l.duration > 0
+                        ? <span>{fmt(l.duration)}</span>
+                        : <span style={{color:'#8A97A8', fontStyle:'italic'}}>Assessment only</span>}
+                      {bestPass > 0 && <span style={{color:'#17A674', fontWeight:600}}>· {l.duration > 0 ? '' : ''}Assessment {bestPass}%</span>}
                     </div>
-                    {wpct>0 && wpct<100 && <div style={{marginTop:6}}><ProgressBar value={Math.round(wpct)} height={3}/></div>}
+                    {wpct>0 && wpct<100 && l.duration>0 && <div style={{marginTop:6}}><ProgressBar value={Math.round(wpct)} height={3}/></div>}
                   </div>
                 </div>
               );
@@ -631,23 +666,26 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
           </div>
         </Card>
 
-        {/* Step 2 — Assessment CTA */}
-        <Card pad={16} style={{borderColor: unlocked ? '#CCEAFF' : '#EEF2F7', background: unlocked ? 'linear-gradient(180deg,#F2F9FF,#fff)' : '#fff'}}>
-          <div style={{display:'flex', alignItems:'center', gap:10}}>
-            <div style={{width:36, height:36, borderRadius:10, background: unlocked ? '#E6F4FF' : '#F7F9FC', color: unlocked ? '#0072FF' : '#8A97A8', display:'grid', placeItems:'center'}}>
-              <Icon d="M6 3h9l4 4v14a2 2 0 01-2 2H6a2 2 0 01-2-2V5a2 2 0 012-2zM14 3v5h5M8 13l3 3 5-6" size={16}/>
+        {/* Step 2 — Assessment CTA: only in right rail for video lessons.
+            No-video lessons show a large centred block in the main area instead. */}
+        {hasVideo && (
+          <Card pad={16} style={{borderColor: unlocked ? '#CCEAFF' : '#EEF2F7', background: unlocked ? 'linear-gradient(180deg,#F2F9FF,#fff)' : '#fff'}}>
+            <div style={{display:'flex', alignItems:'center', gap:10}}>
+              <div style={{width:36, height:36, borderRadius:10, background: unlocked ? '#E6F4FF' : '#F7F9FC', color: unlocked ? '#0072FF' : '#8A97A8', display:'grid', placeItems:'center'}}>
+                <Icon d="M6 3h9l4 4v14a2 2 0 01-2 2H6a2 2 0 01-2-2V5a2 2 0 012-2zM14 3v5h5M8 13l3 3 5-6" size={16}/>
+              </div>
+              <div style={{flex:1, minWidth:0}}>
+                <div style={{fontSize:11, fontWeight:700, color:'#0072FF', letterSpacing:'.08em', textTransform:'uppercase'}}>Step 2 · Assessment</div>
+                <div style={{fontSize:13, fontWeight:700, color:'#0A1F3D', marginTop:2}}>{unlocked ? 'Ready to take' : 'Locked — finish the video'}</div>
+              </div>
             </div>
-            <div style={{flex:1, minWidth:0}}>
-              <div style={{fontSize:11, fontWeight:700, color:'#0072FF', letterSpacing:'.08em', textTransform:'uppercase'}}>Step 2 · Assessment</div>
-              <div style={{fontSize:13, fontWeight:700, color:'#0A1F3D', marginTop:2}}>{unlocked ? 'Ready to take' : 'Locked — finish the video'}</div>
+            <div style={{marginTop:10, fontSize:11, color:'#5B6A7D'}}>{Math.round(watchedPct)}% watched · {fmt(furthest)} of {fmt(DUR)}</div>
+            <div style={{marginTop:6}}><ProgressBar value={Math.min(100, Math.round(watchedPct))} height={4}/></div>
+            <div style={{marginTop:12}}>
+              <Btn full disabled={!unlocked} onClick={goToQuiz}>{unlocked ? 'Start assessment →' : `Watch ${Math.ceil(UNLOCK_THRESHOLD*100)}% to unlock`}</Btn>
             </div>
-          </div>
-          <div style={{marginTop:10, fontSize:11, color:'#5B6A7D'}}>{Math.round(watchedPct)}% watched · {fmt(furthest)} of {fmt(DUR)}</div>
-          <div style={{marginTop:6}}><ProgressBar value={Math.min(100, Math.round(watchedPct))} height={4}/></div>
-          <div style={{marginTop:12}}>
-            <Btn full disabled={!unlocked} onClick={goToQuiz}>{unlocked ? 'Start assessment →' : `Watch ${Math.ceil(UNLOCK_THRESHOLD*100)}% to unlock`}</Btn>
-          </div>
-        </Card>
+          </Card>
+        )}
 
         {/* Agreement CTA — only visible when the course requires one and the
             learner has not yet signed. Sits BELOW the quiz so the flow reads
@@ -672,7 +710,7 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
               <div style={{display:'flex', alignItems:'center', gap:10}}>
                 <div style={{width:36, height:36, borderRadius:10, background: agreementUnlocked ? '#FFF1CC' : '#F7F9FC', color: agreementUnlocked ? '#9A6708' : '#8A97A8', display:'grid', placeItems:'center', fontSize:18}}>{agreementUnlocked ? '✍️' : '🔒'}</div>
                 <div style={{flex:1, minWidth:0}}>
-                  <div style={{fontSize:11, fontWeight:700, color: agreementUnlocked ? '#9A6708' : '#8A97A8', letterSpacing:'.08em', textTransform:'uppercase'}}>Step 3 · Agreement</div>
+                  <div style={{fontSize:11, fontWeight:700, color: agreementUnlocked ? '#9A6708' : '#8A97A8', letterSpacing:'.08em', textTransform:'uppercase'}}>{hasVideo ? 'Step 3' : 'Step 2'} · Agreement</div>
                   <div style={{fontSize:13, fontWeight:700, color:'#0A1F3D', marginTop:2}}>{agreementUnlocked ? 'Sign to complete' : 'Unlocks after the assessment'}</div>
                 </div>
               </div>
@@ -704,13 +742,17 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
 // Lists the steps in one panel — Video, Assessment, and (optionally) Document.
 // Wording intentionally kept neutral (no "compliance" branding) so the same
 // flow works for any course type.
-function ComplianceWizardModal({ courseTitle, agreementRequired, onAcknowledge }: { courseTitle: string; agreementRequired: boolean; onAcknowledge: () => void }) {
-  const steps: { tag: string; text: string }[] = [
-    { tag: 'Step 1 — Video', text: 'Watch the full training video. Skipping ahead and tab switching are disabled.' },
-    { tag: 'Step 2 — Assessment', text: 'The assessment requires 100% correct answers. If any answer is wrong, it restarts.' },
-  ];
+function ComplianceWizardModal({ courseTitle, hasVideo, agreementRequired, onAcknowledge }: { courseTitle: string; hasVideo: boolean; agreementRequired: boolean; onAcknowledge: () => void }) {
+  // Build steps dynamically — only include the video step if a video was uploaded.
+  // Step numbers are sequential so learners never see gaps (e.g. Step 1 → Step 3).
+  let n = 1;
+  const steps: { tag: string; text: string }[] = [];
+  if (hasVideo) {
+    steps.push({ tag: `Step ${n++} — Watch video`, text: 'Watch the full training video. Skipping ahead and tab switching are disabled.' });
+  }
+  steps.push({ tag: `Step ${n++} — Assessment`, text: '100% correct answers required to pass. Any wrong answers are shown for re-attempt individually — you don\'t restart the whole quiz.' });
   if (agreementRequired) {
-    steps.push({ tag: 'Step 3 — Document', text: 'Read the complete document, then sign to mark the course complete.' });
+    steps.push({ tag: `Step ${n} — Sign agreement`, text: 'Read the complete document, then add your signature to mark the course complete.' });
   }
 
   return (
