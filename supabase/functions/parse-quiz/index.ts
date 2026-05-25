@@ -82,10 +82,16 @@ function detectConsentBlock(text: string): string | null {
   // Start of the block: last "By checking the box" / "acknowledge and confirm"
   // before the agree line; else a reasonable window back.
   const before = text.slice(0, agreeMatch.index);
-  const startRe = /(by\s+checking\s+the\s+box|acknowledge\s+and\s+confirm)/gi;
+  // Prefer "by checking the box" (captures the full lead-in) over the later
+  // "acknowledge and confirm" so the statement isn't truncated mid-sentence.
   let startIdx = -1;
   let m: RegExpExecArray | null;
-  while ((m = startRe.exec(before)) !== null) startIdx = m.index;
+  const byBox = /by\s+checking\s+the\s+box/gi;
+  while ((m = byBox.exec(before)) !== null) startIdx = m.index;
+  if (startIdx < 0) {
+    const ack = /acknowledge\s+and\s+confirm/gi;
+    while ((m = ack.exec(before)) !== null) startIdx = m.index;
+  }
   if (startIdx < 0) startIdx = Math.max(0, agreeMatch.index - 1800);
 
   // Pull in a leading "NN." question number on the same line if present.

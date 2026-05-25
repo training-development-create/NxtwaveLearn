@@ -1085,6 +1085,22 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
                 </label>
                 {parseError && <div style={{marginTop:12, padding:'10px 12px', background:'#FCE1DE', color:'#C2261D', borderRadius:8, fontSize:13, fontWeight:500}}>{parseError}</div>}
 
+                {/* Consent/acknowledgment statement detected at the end of the
+                    document. It's NOT a question — it's saved as the course's
+                    agreement (learner ticks + signs to complete; shows in
+                    analytics). This is why a 35-item doc parses 34 questions. */}
+                {detectedAgreement && (
+                  <div style={{marginTop:12, padding:'12px 14px', background:'#F0FCF5', border:'1px solid #C5EBD7', borderRadius:8}}>
+                    <div style={{fontSize:12, fontWeight:700, color:'#0F7C57', display:'flex', alignItems:'center', gap:8}}>
+                      <span>✍️</span> Consent statement detected — saved as this course's agreement
+                    </div>
+                    <div style={{marginTop:8, fontSize:12, color:'#3B4A5E', lineHeight:1.5, maxHeight:120, overflowY:'auto', whiteSpace:'pre-wrap', background:'#fff', border:'1px solid #E2EFE8', borderRadius:6, padding:'8px 10px'}}>
+                      {detectedAgreement}
+                    </div>
+                    <div style={{marginTop:6, fontSize:11, color:'#5B6A7D'}}>Learners must tick "I have read and agree" and sign to complete the course. The question list below excludes this consent item.</div>
+                  </div>
+                )}
+
                 {questions.length > 0 && (
                   <div style={{marginTop:20}}>
                     <div style={{display:'flex', alignItems:'center', marginBottom:12}}>
