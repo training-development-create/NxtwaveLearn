@@ -64,6 +64,71 @@ function chunks<T>(arr: T[], size: number): T[][] {
   return out;
 }
 
+// Darwinbox field names vary per tenant. Return the first alias that has a value.
+function pick(r: DarwinRecord, keys: string[]): unknown {
+  for (const k of keys) {
+    const v = r[k];
+    if (v != null && String(v).trim() !== "") return v;
+  }
+  return null;
+}
+
+// Manager email can be a flat field (many possible names) OR nested inside a
+// reporting_manager / manager object. We try all of them so manager_id links.
+function pickManagerEmail(r: DarwinRecord): string | null {
+  const flat = pick(r, [
+    "direct_manager_email", "reporting_manager_email", "reporting_manager_email_id",
+    "manager_email", "manager_email_id", "l1_manager_email", "reporting_to_email",
+    "rm_email", "reporting_manager_official_email",
+  ]);
+  if (flat) return toEmail(flat);
+  const mgr = (r.reporting_manager ?? r.manager ?? r.direct_manager_details) as Record<string, unknown> | undefined;
+  if (mgr && typeof mgr === "object") {
+    return toEmail(mgr.email ?? mgr.official_email_id ?? mgr.company_email_id ?? mgr.manager_email);
+  }
+  return null;
+}
+
+function pickManagerName(r: DarwinRecord): string | null {
+  const flat = pick(r, ["direct_manager", "reporting_manager_name", "manager_name", "l1_manager", "reporting_to", "rm_name"]);
+  if (flat) return toText(flat);
+  const mgr = (r.reporting_manager ?? r.manager) as Record<string, unknown> | undefined;
+  if (mgr && typeof mgr === "object") return toText(mgr.name ?? mgr.full_name);
+  return null;
+}
+
+// Reads whatever status field this tenant uses (for upsert + observability).
+function pickStatusRaw(r: DarwinRecord): string | null {
+  return toText(pick(r, ["employee_status", "employment_status", "status", "emp_status", "current_status"]));
+}
+
+// Hard "has left the org" tokens. Deliberately EXCLUDES "resigned" — a resigned
+// employee may still be serving notice (active). We only treat someone as gone
+// on an unambiguous token OR a past exit / last-working date.
+const EXIT_TOKENS = [
+  "exited", "inactive", "relieved", "terminated", "separated",
+  "ex-employee", "ex employee", "no longer", "settled", "f&f", "fnf",
+  "left organization", "left organisation", "deactivated",
+];
+
+// True when the record clearly represents someone who has LEFT.
+// Such records are skipped (not upserted) so their last_synced_at stays stale
+// and mark_exited_employees() flips them to 'exited' (revoking access, keeping
+// their learning history). This works whether your dataset is active-only
+// (exited employees are simply absent) OR mixed (exited rows are present).
+function isExitedRecord(r: DarwinRecord): boolean {
+  const status = (pickStatusRaw(r) ?? "").toLowerCase();
+  if (status && EXIT_TOKENS.some((t) => status.includes(t))) return true;
+  // A past actual-exit date is the most reliable signal (resignation date is NOT
+  // used — that can be in the future / notice period).
+  const exitDate = toText(pick(r, ["date_of_exit", "last_working_day", "exit_date", "relieving_date"]));
+  if (exitDate) {
+    const t = Date.parse(exitDate);
+    if (!isNaN(t) && t <= Date.now()) return true;
+  }
+  return false;
+}
+
 async function fetchDarwinRecords(apiKey: string, datasetKey: string): Promise<DarwinRecord[]> {
   const baseUrl = Deno.env.get("DARWINBOX_BASE_URL");
   const username = Deno.env.get("DARWINBOX_USERNAME");
@@ -156,18 +221,36 @@ Deno.serve(async (req) => {
   const now = new Date().toISOString();
   const upserts: EmployeeUpsert[] = [];
 
+  // Observability — surfaced in the response + logs so the real tenant field
+  // names/values can be confirmed without a separate probe run.
+  const statusValuesSeen = new Set<string>();
+  let exitedInPayloadSkipped = 0;
+  let managerEmailsFound = 0;
+  const sampleKeys = records[0] ? Object.keys(records[0]) : [];
+
   for (const r of records) {
     const email = toEmail(r.company_email_id ?? r.official_email_id ?? r.email);
     if (!email) continue;
+
+    // Record whatever status this tenant reports (or note its absence).
+    const rawStatus = pickStatusRaw(r);
+    statusValuesSeen.add(rawStatus ?? "(no status field)");
+
+    // Skip employees who have LEFT. Skipping (rather than upserting) leaves
+    // their last_synced_at stale so mark_exited_employees() flips them to
+    // 'exited' afterwards — which revokes access but keeps learning history.
+    // Robust to tenants whose dataset includes exited rows AND those where
+    // exited rows are simply absent.
+    if (isExitedRecord(r)) { exitedInPayloadSkipped++; continue; }
 
     const fullName =
       toText(r.full_name) ??
       ([toText(r.first_name), toText(r.last_name)].filter(Boolean).join(" ") || email);
 
-    // Only include employees Darwinbox marks as active.
-    // Employees absent from this response are caught by mark_exited_employees.
-    const employeeStatusRaw = (toText(r.employee_status) ?? "active").toLowerCase();
-    if (employeeStatusRaw !== "active") continue;
+    // Manager identity — tolerant to flat aliases AND nested manager objects.
+    const mgrEmail = pickManagerEmail(r);
+    const mgrName = pickManagerName(r);
+    if (mgrEmail) managerEmailsFound++;
 
     upserts.push({
       email,
@@ -176,7 +259,7 @@ Deno.serve(async (req) => {
       contact: toText(r.personal_mobile_no ?? r.office_mobile_no),
       status: "active",
       last_synced_at: now,           // fresh stamp — proves they were seen this run
-      employee_status: toText(r.employee_status),
+      employee_status: rawStatus,
       first_name: toText(r.first_name),
       last_name: toText(r.last_name),
       date_of_joining: toText(r.date_of_joining),
@@ -185,8 +268,8 @@ Deno.serve(async (req) => {
       department_name: toText(r.department_name),
       designation: toText(r.designation),
       designation_name: toText(r.designation_name),
-      direct_manager: toText(r.direct_manager),
-      direct_manager_email: toEmail(r.direct_manager_email),
+      direct_manager: mgrName,
+      direct_manager_email: mgrEmail,
       hod: toText(r.hod),
       hod_email_id: toEmail(r.hod_email_id),
       l2_manager: toText(r.l2_manager),
@@ -197,11 +280,16 @@ Deno.serve(async (req) => {
       full_name: toText(r.full_name),
       personal_mobile_no: toText(r.personal_mobile_no),
       office_mobile_no: toText(r.office_mobile_no),
-      manager_name: toText(r.direct_manager),
-      manager_email: toEmail(r.direct_manager_email),
+      manager_name: mgrName,
+      manager_email: mgrEmail,
       darwin_raw: r,
     });
   }
+
+  // Log so the tenant's real field names/values are visible in the function logs.
+  console.log(`[sync] records=${records.length} active=${upserts.length} exited_in_payload=${exitedInPayloadSkipped} manager_emails_found=${managerEmailsFound}`);
+  console.log(`[sync] status values seen: ${JSON.stringify(Array.from(statusValuesSeen).slice(0, 20))}`);
+  console.log(`[sync] sample record keys: ${JSON.stringify(sampleKeys.slice(0, 60))}`);
 
   if (!upserts.length) {
     const { data: exitData } = await sb.rpc("mark_exited_employees", { _synced_before: syncStart });
@@ -533,5 +621,12 @@ Deno.serve(async (req) => {
     manager_links_unresolved: unresolvedManagerCount,
     new_hires_enrolled: (newHires ?? []).length,
     extended_columns_written: !usedMinimalFallback,
+    // ---- Diagnostics: use these to confirm your tenant's real field shape ----
+    diagnostics: {
+      status_values_seen: Array.from(statusValuesSeen).slice(0, 20),
+      exited_in_payload_skipped: exitedInPayloadSkipped,
+      manager_emails_in_payload: managerEmailsFound,
+      sample_record_keys: sampleKeys.slice(0, 60),
+    },
   });
 });
