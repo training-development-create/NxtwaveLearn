@@ -397,6 +397,41 @@ export function AdminAnalytics() {
     // is refreshed by loadStats() — refs alone don't trigger React updates.
   }, [profilesAll, department, subDepartment, lessonIds, progVersion]);
 
+  // Live completion-status breakdown for the selected course, across every
+  // ASSIGNED employee (profilesAll is already scoped to the course's assignment
+  // set). Four mutually-exclusive buckets:
+  //   • completed     — every lesson done (+ agreement signed when required)
+  //   • inProgress    — signed in and has some watch/quiz activity, not complete
+  //   • notStarted    — signed in but zero activity
+  //   • notLoggedIn   — assigned but never signed in (no auth_user_id)
+  // Recomputes on progVersion, so it auto-updates live as learners progress
+  // (loadStats bumps progVersion on every realtime lesson_progress / quiz /
+  // enrollment / agreement change). Honours the active dept/sub-dept/manager
+  // filters so the graph matches whatever scope the admin is viewing.
+  const statusBreakdown = useMemo(() => {
+    const agreementRequired = agreementRequiredRef.current;
+    const signedSet = signedSetRef.current;
+    const isCourseComplete = (authId: string) =>
+      lessonIds.length > 0
+      && lessonIds.every(lid => progArrRef.current.some(p => p.user_id === authId && p.lesson_id === lid && p.completed))
+      && (!agreementRequired || signedSet.has(authId));
+    const hasActivity = (authId: string) =>
+      progArrRef.current.some(p => p.user_id === authId && ((p.watched_seconds || 0) > 0 || p.completed))
+      || attArrRef.current.some(a => a.user_id === authId);
+
+    let completed = 0, inProgress = 0, notStarted = 0, notLoggedIn = 0;
+    profilesAll.forEach(p => {
+      if (department !== 'all' && (p.department || 'Unassigned') !== department) return;
+      if (subDepartment !== 'all' && (p.sub_department || 'Unassigned') !== subDepartment) return;
+      if (managerEmail !== 'all' && (p.manager_email || p.manager_name || 'Unassigned') !== managerEmail) return;
+      if (!p.signed_in) { notLoggedIn++; return; }
+      if (isCourseComplete(p.id)) { completed++; return; }
+      if (hasActivity(p.id)) { inProgress++; return; }
+      notStarted++;
+    });
+    return { completed, inProgress, notStarted, notLoggedIn, total: completed + inProgress + notStarted + notLoggedIn };
+  }, [profilesAll, department, subDepartment, managerEmail, lessonIds, progVersion]);
+
   const departmentStats = stats.dStats;
   const managerStats = stats.mStats;
 
@@ -689,12 +724,15 @@ export function AdminAnalytics() {
               : `✗ Sync failed${syncResult.error ? `: ${syncResult.error}` : ''} · ${syncResult.ts}`}
           </span>
         )}
+        {/* Manual sync temporarily disabled while the sync issue is investigated.
+            Re-enable by restoring onClick={triggerSync} and disabled={syncing}. */}
         <button
-          onClick={triggerSync}
-          disabled={syncing}
-          style={{padding:'7px 16px', background: syncing ? '#EEF2F7' : '#0072FF', color: syncing ? '#8A97A8' : '#fff', border:'none', borderRadius:8, fontSize:12, fontWeight:700, cursor: syncing ? 'not-allowed' : 'pointer', transition:'background .15s'}}
+          onClick={undefined}
+          disabled
+          title="Manual sync is temporarily disabled."
+          style={{padding:'7px 16px', background:'#EEF2F7', color:'#8A97A8', border:'none', borderRadius:8, fontSize:12, fontWeight:700, cursor:'not-allowed'}}
         >
-          {syncing ? 'Syncing…' : 'Sync Now'}
+          Sync paused
         </button>
       </div>
       <div style={{display:'flex', gap:10, marginBottom:20, alignItems:'center', flexWrap:'wrap'}}>
@@ -759,6 +797,30 @@ export function AdminAnalytics() {
           </div>
         );
       })()}
+
+      {/* Live completion-status graph — completed / in progress / not started /
+          not logged in, across everyone assigned to the selected course.
+          Auto-updates as learners progress (driven by progVersion). */}
+      <Card pad={0} style={{marginBottom:20}}>
+        <div style={{padding:'14px 18px', borderBottom:'1px solid #EEF2F7', display:'flex', alignItems:'center', gap:10}}>
+          <div className="eyebrow">COMPLETION STATUS — THIS COURSE</div>
+          <span style={{marginLeft:'auto', display:'inline-flex', alignItems:'center', gap:6, fontSize:11, fontWeight:700, color:'#17A674', letterSpacing:'.04em'}}>
+            <span style={{width:7, height:7, borderRadius:99, background:'#17A674', boxShadow:'0 0 0 4px rgba(23,166,116,.18)'}}/> LIVE
+          </span>
+        </div>
+        <div style={{padding:'24px 24px 26px'}}>
+          {statusBreakdown.total === 0 ? (
+            <div style={{fontSize:13, color:'#8A97A8'}}>No employees assigned to this course yet.</div>
+          ) : (
+            <StatusDonut data={[
+              { label: 'Completed', value: statusBreakdown.completed, color: '#17A674' },
+              { label: 'In progress', value: statusBreakdown.inProgress, color: '#E08A1E' },
+              { label: 'Not started', value: statusBreakdown.notStarted, color: '#C2261D' },
+              { label: 'Not logged in', value: statusBreakdown.notLoggedIn, color: '#8A97A8' },
+            ]}/>
+          )}
+        </div>
+      </Card>
 
       {/* Department completion + Manager leaderboard */}
       <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:16, marginBottom:20}}>
@@ -1340,6 +1402,49 @@ function MiniStat({ label, v }: { label: string; v: string }) {
     <div>
       <div style={{fontSize:10, fontWeight:700, color:'#8A97A8', letterSpacing:'.08em'}}>{label.toUpperCase()}</div>
       <div style={{fontSize:20, fontWeight:800, color:'#002A4B', marginTop:2}}>{v}</div>
+    </div>
+  );
+}
+
+// Donut chart (dependency-free, CSS conic-gradient) + legend with live counts.
+// Used by the course completion-status graph in AdminAnalytics.
+function StatusDonut({ data }: { data: { label: string; value: number; color: string }[] }) {
+  const total = data.reduce((s, d) => s + d.value, 0);
+  let acc = 0;
+  const stops = data
+    .filter(d => d.value > 0)
+    .map(d => {
+      const start = total ? (acc / total) * 100 : 0;
+      acc += d.value;
+      const end = total ? (acc / total) * 100 : 0;
+      return `${d.color} ${start}% ${end}%`;
+    })
+    .join(', ');
+  const background = total ? `conic-gradient(${stops})` : '#EEF2F7';
+  return (
+    <div style={{display:'flex', alignItems:'center', gap:28, flexWrap:'wrap'}}>
+      <div style={{position:'relative', width:172, height:172, flexShrink:0}}>
+        <div style={{width:172, height:172, borderRadius:'50%', background, transition:'background .3s ease'}}/>
+        <div style={{position:'absolute', inset:0, margin:'auto', width:104, height:104, borderRadius:'50%', background:'#fff', display:'grid', placeItems:'center', boxShadow:'inset 0 0 0 1px #EEF2F7'}}>
+          <div style={{textAlign:'center'}}>
+            <div style={{fontSize:30, fontWeight:900, color:'#002A4B', letterSpacing:'-.02em', lineHeight:1}}>{total}</div>
+            <div style={{fontSize:10, color:'#8A97A8', fontWeight:700, letterSpacing:'.08em', marginTop:3}}>ASSIGNED</div>
+          </div>
+        </div>
+      </div>
+      <div style={{display:'flex', flexDirection:'column', gap:12, flex:1, minWidth:220}}>
+        {data.map(d => {
+          const pct = total ? Math.round((d.value / total) * 100) : 0;
+          return (
+            <div key={d.label} style={{display:'flex', alignItems:'center', gap:12}}>
+              <span style={{width:12, height:12, borderRadius:3, background:d.color, flexShrink:0}}/>
+              <span style={{fontSize:13, color:'#3B4A5E', flex:1, fontWeight:600}}>{d.label}</span>
+              <span style={{fontSize:16, fontWeight:800, color:'#002A4B'}}>{d.value}</span>
+              <span style={{fontSize:12, color:'#8A97A8', width:44, textAlign:'right'}}>{pct}%</span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
