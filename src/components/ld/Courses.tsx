@@ -79,7 +79,7 @@ export function Courses({ onNav, initialQuery }: { onNav: Nav; initialQuery?: st
                 </div>
                 {isInProgress(c) || c.progress === 100
                   ? <ProgressBar value={c.progress} showLabel/>
-                  : <Btn full variant="soft" size="sm">{c.lessons_total ? 'Start course →' : 'No lessons yet'}</Btn>}
+                  : <Btn full variant="soft" size="sm">{c.lessons_total ? 'Start Quiz →' : 'No lessons yet'}</Btn>}
               </div>
             </div>
           ))}

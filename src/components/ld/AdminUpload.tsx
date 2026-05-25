@@ -51,10 +51,6 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
   const [readingFile, setReadingFile] = useState<File | null>(null);
 
   const [questions, setQuestions] = useState<Q[]>([]);
-  // Consent/acknowledgment statement detected at the end of the assessment doc
-  // (e.g. "By checking the box… I have read and agree"). Stored as the course's
-  // text agreement on publish so the sign-to-complete flow applies.
-  const [detectedAgreement, setDetectedAgreement] = useState<string | null>(null);
   const [parsing, setParsing] = useState(false);
   const [parseError, setParseError] = useState<string | null>(null);
   const [active, setActive] = useState(0);
@@ -470,9 +466,6 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
       if (!parsed.length) throw new Error('AI could not find any questions in this file.');
       setQuestions(parsed);
       setActive(0);
-      // The parser also returns a trailing consent statement (if the doc has
-      // one) — captured here and saved as the course's text agreement on publish.
-      setDetectedAgreement((data?.agreementText as string | null) ?? null);
     } catch (e) {
       setParseError((e as Error).message || 'Failed to parse questions');
     } finally { setParsing(false); }
@@ -652,18 +645,6 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
           .update({ agreement_pdf_path: aPath, agreement_required: true })
           .eq('id', courseId);
         if (cUpErr) throw cUpErr;
-      }
-
-      // ----- Optional TEXT agreement (consent statement detected in the doc) -----
-      // When the assessment document ends with a consent block, store it as the
-      // course's text agreement so the same sign-to-complete + analytics flow
-      // applies (no PDF needed). Soft-skip if the column doesn't exist yet.
-      if (detectedAgreement && detectedAgreement.trim()) {
-        const { error: tErr } = await supabase.from('courses')
-          .update({ agreement_text: detectedAgreement.trim(), agreement_required: true })
-          .eq('id', courseId);
-        if (tErr && !/agreement_text|column .* does not exist/i.test(tErr.message)) throw tErr;
-        if (tErr) console.warn('[AdminUpload] courses.agreement_text missing — apply migration 20260525130000_course_agreement_text.sql');
       }
 
       // ----- Write course_assignments for the picker selections.
@@ -1084,22 +1065,6 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
                   <div style={{fontSize:12, color:'#5B6A7D', marginTop:4}}>Format freely — write Q1, A) B) C) D), and mark the answer.</div>
                 </label>
                 {parseError && <div style={{marginTop:12, padding:'10px 12px', background:'#FCE1DE', color:'#C2261D', borderRadius:8, fontSize:13, fontWeight:500}}>{parseError}</div>}
-
-                {/* Consent/acknowledgment statement detected at the end of the
-                    document. It's NOT a question — it's saved as the course's
-                    agreement (learner ticks + signs to complete; shows in
-                    analytics). This is why a 35-item doc parses 34 questions. */}
-                {detectedAgreement && (
-                  <div style={{marginTop:12, padding:'12px 14px', background:'#F0FCF5', border:'1px solid #C5EBD7', borderRadius:8}}>
-                    <div style={{fontSize:12, fontWeight:700, color:'#0F7C57', display:'flex', alignItems:'center', gap:8}}>
-                      <span>✍️</span> Consent statement detected — saved as this course's agreement
-                    </div>
-                    <div style={{marginTop:8, fontSize:12, color:'#3B4A5E', lineHeight:1.5, maxHeight:120, overflowY:'auto', whiteSpace:'pre-wrap', background:'#fff', border:'1px solid #E2EFE8', borderRadius:6, padding:'8px 10px'}}>
-                      {detectedAgreement}
-                    </div>
-                    <div style={{marginTop:6, fontSize:11, color:'#5B6A7D'}}>Learners must tick "I have read and agree" and sign to complete the course. The question list below excludes this consent item.</div>
-                  </div>
-                )}
 
                 {questions.length > 0 && (
                   <div style={{marginTop:20}}>

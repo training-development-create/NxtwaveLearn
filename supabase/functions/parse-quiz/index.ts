@@ -447,11 +447,15 @@ Deno.serve(async (req) => {
       }
     }
     if (!questions.length) return err(400, "AI couldn't find any multiple-choice questions in this file.");
-    // Detect a trailing consent/acknowledgment statement (the doc's final
-    // checkbox item) so the admin flow can store it as the course's text
-    // agreement. Returned separately — it is NOT an MCQ.
-    const agreementText = extractedText ? detectConsentBlock(extractedText) : null;
-    return new Response(JSON.stringify({ questions, agreementText }), {
+    // Append the trailing consent/acknowledgment block as the FINAL question —
+    // a single-option checkbox ("I have read and agree…") the learner must tick.
+    // Pushed after normalization so it bypasses the 2–6 options rule (it has
+    // exactly one option). The UI renders any 1-option question as a checkbox.
+    const consent = extractedText ? detectConsentBlock(extractedText) : null;
+    if (consent) {
+      questions.push({ q: consent, options: ["I have read and agree to all of the above"], correct: 0, hint: "" });
+    }
+    return new Response(JSON.stringify({ questions }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e) {

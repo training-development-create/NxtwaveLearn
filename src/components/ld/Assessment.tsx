@@ -3,13 +3,11 @@ import { useMCQ, useCourseLessons, recordAttempt, saveLessonProgress } from "./q
 import { useAuth } from "./auth";
 import { supabase } from "@/integrations/supabase/client";
 import { Btn, Card, Chip, ProgressBar, EmptyState } from "./ui";
-import { AgreementSign } from "./AgreementSign";
 import type { Nav, AppState } from "./App";
 
 export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppState; setState: (s: AppState) => void }) {
-  const { user, profile } = useAuth();
-  const [course, setCourse] = useState<{ id: string; title: string; agreement_required: boolean; agreement_pdf_path: string | null; agreement_text: string | null } | null>(null);
-  const [hasSignedAgreement, setHasSignedAgreement] = useState(false);
+  const { user } = useAuth();
+  const [course, setCourse] = useState<{ id: string; title: string } | null>(null);
   const { lessons } = useCourseLessons(state.course, user?.id ?? null);
   const activeLessonId = state.activeLesson;
   const lesson = lessons.find(l => l.id === activeLessonId);
@@ -17,8 +15,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
   const nextLesson = lessons[lessonIdx + 1];
   const { questions, loading } = useMCQ(activeLessonId);
 
-  // 'agreement' stage = post-quiz, learner must read & sign before completion.
-  const [stage, setStage] = useState<'intro'|'quiz'|'result'|'agreement'>('intro');
+  const [stage, setStage] = useState<'intro'|'quiz'|'result'>('intro');
   const [idx, setIdx] = useState(0);
   const [answers, setAnswers] = useState<(number|null)[]>([]);
   const [flagged, setFlagged] = useState<Set<number>>(new Set());
@@ -94,15 +91,8 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
   }, [questions.length]);
   useEffect(() => {
     if (!state.course) return;
-    supabase.from('courses').select('id, title, agreement_required, agreement_pdf_path, agreement_text').eq('id', state.course).maybeSingle().then(({ data }) => setCourse(data as typeof course));
+    supabase.from('courses').select('id, title').eq('id', state.course).maybeSingle().then(({ data }) => setCourse(data as typeof course));
   }, [state.course]);
-
-  // Has the learner already signed the agreement for this course?
-  useEffect(() => {
-    if (!user || !state.course) return;
-    supabase.from('agreement_signatures').select('id').eq('user_id', user.id).eq('course_id', state.course).maybeSingle()
-      .then(({ data }) => setHasSignedAgreement(!!data));
-  }, [user, state.course]);
 
   if (!state.course || !state.activeLesson) {
     return <div style={{padding:40}}><EmptyState icon="🧭" title="No assessment selected" sub="Pick a video first." action={<Btn onClick={()=>onNav('courses')}>Back to courses</Btn>}/></div>;
@@ -111,7 +101,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
     return <div style={{padding:40, color:'#5B6A7D', fontSize:13}}>Loading…</div>;
   }
   if (questions.length === 0) {
-    return <div style={{padding:40}}><EmptyState icon="📝" title="No assessment for this video" sub="Your Compliance admin hasn't added questions for this lesson yet." action={<Btn onClick={()=>onNav('player')}>Back to video</Btn>}/></div>;
+    return <div style={{padding:40}}><EmptyState icon="📝" title="No quiz for this lesson" sub="Your admin hasn't added questions for this lesson yet." action={<Btn onClick={()=>onNav('courses')}>Back to courses</Btn>}/></div>;
   }
 
   // Real lesson title, or null when it's the blank "Untitled Lesson" default.
@@ -143,47 +133,16 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
           </div>
           <div style={{padding:'22px 40px 28px'}}>
             <ul style={{margin:0, padding:0, listStyle:'none', display:'flex', flexDirection:'column', gap:8, fontSize:13, color:'#3B4A5E'}}>
-              {['You can flag questions and come back','Navigate freely between questions','Results are shared with your Compliance admin','Wrong answers can be re-attempted without restarting the full quiz','You must answer every question correctly to pass'].map(s => (
+              {['You can flag questions and come back','Navigate freely between questions','Wrong answers can be re-attempted without restarting the full quiz','You must answer every question correctly to pass'].map(s => (
                 <li key={s} style={{display:'flex', gap:10}}><span style={{color:'#17A674'}}>✓</span>{s}</li>
               ))}
             </ul>
             <div style={{marginTop:22, display:'flex', gap:10}}>
-              <Btn size="lg" onClick={()=>setStage('quiz')}>Start assessment →</Btn>
-              <Btn variant="ghost" size="lg" onClick={()=>onNav('player')}>Back to video</Btn>
+              <Btn size="lg" onClick={()=>setStage('quiz')}>Start Quiz →</Btn>
             </div>
           </div>
         </Card>
       </div>
-    );
-  }
-
-  if (stage === 'agreement') {
-    if (!course.agreement_pdf_path && !course.agreement_text) {
-      // No agreement (PDF or text) for this course — skip straight to next lesson.
-      if (nextLesson) { setState({ ...state, activeLesson: nextLesson.id }); onNav('player'); }
-      else { onNav('courses'); }
-      return null;
-    }
-    return (
-      <AgreementSign
-        courseId={course.id}
-        courseTitle={course.title}
-        agreementPdfPath={course.agreement_pdf_path}
-        agreementText={course.agreement_text}
-        fullName={profile?.full_name || ''}
-        onSigned={async () => {
-          setHasSignedAgreement(true);
-          // Now that the signature is in, the lesson is officially complete.
-          // (We deliberately deferred this from quiz submit when the course
-          // required an agreement.)
-          if (user && lesson) {
-            await saveLessonProgress(user.id, lesson.id, lesson.duration, true);
-          }
-          if (nextLesson) { setState({ ...state, activeLesson: nextLesson.id }); onNav('player'); }
-          else { onNav('courses'); }
-        }}
-        onCancel={() => setStage('result')}
-      />
     );
   }
 
@@ -218,7 +177,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
               <div style={{width:52, height:52, borderRadius:14, background:'rgba(255,255,255,.14)', display:'grid', placeItems:'center', fontSize:24}}>{pass ? '✓' : '!'}</div>
               <div style={{fontSize:11, fontWeight:600, letterSpacing:'.12em', color:pass?'#D9F4E6':'#7FDBFF', marginTop:18, textTransform:'uppercase'}}>{pass?'Passed':'Not yet passed'}</div>
               <div style={{fontSize:48, fontWeight:700, letterSpacing:'-.03em', marginTop:4, lineHeight:1}}>{pct}%</div>
-              <div style={{fontSize:13, color:pass?'#D9F4E6':'#C8DDF4', marginTop:6}}>{correct} of {questions.length} correct · {pass ? (nextLesson ? 'Next video unlocked' : 'Course complete') : `${wrongIndices.length} wrong — re-attempt just those questions`}</div>
+              <div style={{fontSize:13, color:pass?'#D9F4E6':'#C8DDF4', marginTop:6}}>{correct} of {questions.length} correct · {pass ? (nextLesson ? `Next ${courseHasVideo ? 'video' : 'lesson'} unlocked` : 'Course complete') : `${wrongIndices.length} wrong — re-attempt just those questions`}</div>
             </div>
             <div style={{padding:'30px 40px 32px'}}>
               {/* Show only the final result + score; correct answers are intentionally
@@ -265,11 +224,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
               )}
               <div style={{marginTop:22, display:'flex', gap:10, flexWrap:'wrap'}}>
                 {pass ? (
-                  // Compliance gate: if the course requires an agreement and
-                  // the learner hasn't signed yet, route to the agreement step.
-                  course.agreement_required && (course.agreement_pdf_path || course.agreement_text) && !hasSignedAgreement
-                    ? <Btn size="lg" onClick={() => setStage('agreement')}>Continue to agreement ✍️ →</Btn>
-                    : <Btn size="lg" onClick={onNext}>{nextLesson ? 'Start next video →' : 'Back to courses →'}</Btn>
+                  <Btn size="lg" onClick={onNext}>{nextLesson ? 'Start next lesson →' : 'Back to courses →'}</Btn>
                 ) : (
                   <Btn size="lg" onClick={onRetryWrong}>Re-attempt wrong questions →</Btn>
                 )}
@@ -283,7 +238,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
               <div style={{fontSize:13, fontWeight:700, color:'#0A1F3D', marginBottom:8}}>What happens next</div>
               <div style={{fontSize:13, color:'#3B4A5E', lineHeight:1.6}}>
                 {pass
-                  ? <>Your score has been recorded. {nextLesson ? <>The next video — <b>{nextLesson.title}</b> — is now unlocked.</> : <>You've completed every video in this course.</>}</>
+                  ? <>Your score has been recorded. {nextLesson ? <>The next {courseHasVideo ? 'video' : 'lesson'} — <b>{nextLesson.title}</b> — is now unlocked.</> : <>You've completed this course.</>}</>
                   : <>Re-attempt the {wrongIndices.length} wrong question{wrongIndices.length === 1 ? '' : 's'} to pass. Your correct answers are already saved — only the wrong ones will be shown.</>}
               </div>
             </Card>
@@ -349,7 +304,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
           <h2 style={{fontSize:22, color:'#0A1F3D', margin:'4px 0 0', letterSpacing:'-.02em', fontWeight:700}}>{lessonName || course.title}</h2>
         </div>
         <div style={{marginLeft:'auto', display:'flex', gap:10, alignItems:'center'}}>
-          <Btn variant="ghost" size="sm" onClick={()=>onNav('player')}>Exit</Btn>
+          <Btn variant="ghost" size="sm" onClick={()=>onNav(courseHasVideo ? 'player' : 'courses')}>Exit</Btn>
         </div>
       </div>
 
@@ -367,15 +322,31 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
           <div style={{padding:'26px 30px 22px'}}>
             <h3 style={{fontSize:19, color:'#0A1F3D', letterSpacing:'-.01em', fontWeight:700, lineHeight:1.35, margin:0}}>{q.q}</h3>
             <div style={{display:'flex', flexDirection:'column', gap:10, marginTop:20}}>
-              {q.options.map((opt, i) => {
-                const on = selected === i;
-                return (
-                  <button key={i} onClick={()=>setAns(i)} style={{display:'flex', gap:14, alignItems:'flex-start', padding:'13px 16px', background: on?'#F2F9FF':'#fff', border:`1.5px solid ${on?'#0072FF':'#EEF2F7'}`, borderRadius:10, cursor:'pointer', textAlign:'left', transition:'all .15s'}}>
-                    <div style={{flexShrink:0, width:26, height:26, borderRadius:8, background: on?'#0072FF':'#F7F9FC', color: on?'#fff':'#5B6A7D', display:'grid', placeItems:'center', fontWeight:700, fontSize:12}}>{String.fromCharCode(65+i)}</div>
-                    <div style={{fontSize:14, color:'#3B4A5E', lineHeight:1.5, flex:1}}>{opt}</div>
-                  </button>
-                );
-              })}
+              {q.options.length === 1 ? (
+                // Consent/acknowledgment question — a single checkbox to tick.
+                (() => {
+                  const on = selected === 0;
+                  return (
+                    <button
+                      onClick={() => { const a = [...answers]; a[originalIdx] = on ? null : 0; setAnswers(a); }}
+                      style={{display:'flex', gap:14, alignItems:'center', padding:'16px 18px', background: on?'#F0FCF5':'#fff', border:`1.5px solid ${on?'#17A674':'#EEF2F7'}`, borderRadius:10, cursor:'pointer', textAlign:'left', transition:'all .15s'}}
+                    >
+                      <div style={{flexShrink:0, width:24, height:24, borderRadius:6, border:`2px solid ${on?'#17A674':'#CBD5E1'}`, background: on?'#17A674':'#fff', color:'#fff', display:'grid', placeItems:'center', fontWeight:800, fontSize:14}}>{on ? '✓' : ''}</div>
+                      <div style={{fontSize:14, color:'#0A1F3D', lineHeight:1.5, flex:1, fontWeight:600}}>{q.options[0]}</div>
+                    </button>
+                  );
+                })()
+              ) : (
+                q.options.map((opt, i) => {
+                  const on = selected === i;
+                  return (
+                    <button key={i} onClick={()=>setAns(i)} style={{display:'flex', gap:14, alignItems:'flex-start', padding:'13px 16px', background: on?'#F2F9FF':'#fff', border:`1.5px solid ${on?'#0072FF':'#EEF2F7'}`, borderRadius:10, cursor:'pointer', textAlign:'left', transition:'all .15s'}}>
+                      <div style={{flexShrink:0, width:26, height:26, borderRadius:8, background: on?'#0072FF':'#F7F9FC', color: on?'#fff':'#5B6A7D', display:'grid', placeItems:'center', fontWeight:700, fontSize:12}}>{String.fromCharCode(65+i)}</div>
+                      <div style={{fontSize:14, color:'#3B4A5E', lineHeight:1.5, flex:1}}>{opt}</div>
+                    </button>
+                  );
+                })
+              )}
             </div>
           </div>
           <div style={{padding:'14px 26px', borderTop:'1px solid #EEF2F7', display:'flex', alignItems:'center'}}>

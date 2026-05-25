@@ -133,9 +133,10 @@ export function useUserCourses(userId: string | null) {
       // the manager dashboard, and the admin analytics in lockstep.
       const agreementRequired = !!c.agreement_required;
       const agreementSigned = signedCourseIds.has(c.id);
-      const agreementOk = !agreementRequired || agreementSigned;
+      // Agreement step removed — completion depends only on finishing the
+      // lessons (the consent is now an in-quiz checkbox question, not a gate).
       const allLessonsDone = total > 0 && done === total;
-      const fullyComplete = allLessonsDone && agreementOk;
+      const fullyComplete = allLessonsDone;
       const progressPct = fullyComplete ? 100 : Math.min(99, rawPct);
       return {
         ...toCourse(c),

@@ -16,10 +16,9 @@ const lessonRatio = (duration: number, watched: number, completed: boolean) => {
 export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState; setState: (s: AppState) => void }) {
   const { user } = useAuth();
   const courseId = state.course;
-  const [course, setCourse] = useState<{ id: string; title: string; instructor: string; emoji: string; duration_label: string; agreement_required: boolean; agreement_pdf_path: string | null; published_at: string | null; due_in_days: number | null } | null>(null);
+  const [course, setCourse] = useState<{ id: string; title: string; instructor: string; emoji: string; duration_label: string; published_at: string | null; due_in_days: number | null } | null>(null);
   const { lessons, progress, attemptsByLesson, loading, accessDenied, reload } = useCourseLessons(courseId, user?.id ?? null);
   const [videoSrc, setVideoSrc] = useState<string | null>(null);
-  const [hasSignedAgreement, setHasSignedAgreement] = useState(false);
   const [showComplianceModal, setShowComplianceModal] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const frameRef = useRef<HTMLDivElement | null>(null);
@@ -32,12 +31,12 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
     (async () => {
       const wide = await supabase
         .from('courses')
-        .select('id, title, instructor, emoji, duration_label, agreement_required, agreement_pdf_path, published_at, due_in_days')
+        .select('id, title, instructor, emoji, duration_label, published_at, due_in_days')
         .eq('id', courseId).maybeSingle();
       if (!wide.error && wide.data) { if (!cancelled) setCourse(wide.data as typeof course); return; }
       const narrow = await supabase
         .from('courses')
-        .select('id, title, instructor, emoji, duration_label, agreement_required, agreement_pdf_path')
+        .select('id, title, instructor, emoji, duration_label')
         .eq('id', courseId).maybeSingle();
       if (cancelled) return;
       const row = narrow.data ? { ...(narrow.data as Record<string, unknown>), published_at: null, due_in_days: null } as unknown as typeof course : null;
@@ -56,40 +55,6 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
       setShowComplianceModal(true);
     }
   }, [courseId, user]);
-
-  // Has the user signed this course's agreement (if any)?
-  // Refetch on tab focus / visibility so returning from the agreement-sign
-  // view updates the unlocked state without a manual page refresh.
-  // RATE-LIMITED: at scale, naive refetch on every tab visibility/focus
-  // event creates a thundering herd against Supabase whenever many learners
-  // tab-switch in unison. We dedupe to at most one fetch per 30s.
-  useEffect(() => {
-    if (!user || !courseId) { setHasSignedAgreement(false); return; }
-    let cancelled = false;
-    let lastFetchAt = 0;
-    const REFRESH_COOLDOWN_MS = 30_000;
-    const fetchSig = () => {
-      supabase.from('agreement_signatures').select('id').eq('user_id', user.id).eq('course_id', courseId).maybeSingle()
-        .then(({ data }) => { if (!cancelled) setHasSignedAgreement(!!data); });
-    };
-    fetchSig();
-    lastFetchAt = Date.now();
-    const maybeRefresh = () => {
-      if (Date.now() - lastFetchAt < REFRESH_COOLDOWN_MS) return;
-      lastFetchAt = Date.now();
-      fetchSig();
-      reload();
-    };
-    const onVisible = () => { if (!document.hidden) maybeRefresh(); };
-    const onFocus = () => { maybeRefresh(); };
-    document.addEventListener('visibilitychange', onVisible);
-    window.addEventListener('focus', onFocus);
-    return () => {
-      cancelled = true;
-      document.removeEventListener('visibilitychange', onVisible);
-      window.removeEventListener('focus', onFocus);
-    };
-  }, [user, courseId, reload]);
 
   const acknowledgeCompliance = () => {
     if (user && courseId && typeof window !== 'undefined') {
@@ -416,9 +381,7 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
   const stepVideoDone = !hasVideo || !!lessonProgress?.completed || (DUR > 0 && (lessonProgress?.watched_seconds ?? 0) >= DUR);
   // No-quiz lessons skip the assessment step automatically.
   const stepQuizDone = !lesson.has_quiz || lessonAttempts.some(a => a.passed);
-  const agreementGate = !!course?.agreement_required;
-  const stepAgreementDone = !agreementGate || hasSignedAgreement;
-  const stepCompleted = stepVideoDone && stepQuizDone && stepAgreementDone;
+  const stepCompleted = stepVideoDone && stepQuizDone;
 
   return (
     <div style={{padding:'24px 36px 48px', animation:'fadeUp .3s ease-out', display:'grid', gridTemplateColumns:'1fr 340px', gap:20}}>
@@ -426,7 +389,6 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
         <ComplianceWizardModal
           courseTitle={course.title}
           hasVideo={hasVideo}
-          agreementRequired={agreementGate}
           onAcknowledge={acknowledgeCompliance}
         />
       )}
@@ -439,33 +401,13 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
           <span style={{color:'#0A1F3D', fontWeight:600}}>{hasVideo ? `Video ${lessonIdx+1}` : `Lesson ${lessonIdx+1}`}</span>
         </div>
 
-        {/* Compliance step indicator: Watch → Assessment → Sign → Done */}
+        {/* Step indicator: Watch → Assessment → Done */}
         <ComplianceStepIndicator
           hasVideo={hasVideo}
           videoDone={stepVideoDone}
           quizDone={stepQuizDone}
-          agreementRequired={agreementGate}
-          agreementDone={stepAgreementDone}
           completed={stepCompleted}
         />
-
-        {/* Compliance reminder: video + assessment done but agreement still unsigned.
-            The course is NOT marked completed in this state. */}
-        {agreementGate && stepVideoDone && stepQuizDone && !stepAgreementDone && (
-          <div style={{marginBottom:14, padding:'12px 16px', background:'#FFF6E6', border:'1px solid #FCD79B', borderRadius:10, display:'flex', alignItems:'center', gap:12}}>
-            <div style={{fontSize:18}}>⚠️</div>
-            <div style={{flex:1}}>
-              <div style={{fontSize:13, fontWeight:700, color:'#9A6708'}}>Agreement signing — incomplete</div>
-              <div style={{fontSize:12, color:'#9A6708', marginTop:2}}>
-                {hasVideo
-                  ? "You've watched the video and passed the assessment, but the course will not be marked complete until you sign the agreement."
-                  : "You've passed the assessment, but the course will not be marked complete until you sign the agreement."}
-              </div>
-            </div>
-            <Btn size="sm" onClick={() => onNav('assessment')}>Sign agreement</Btn>
-          </div>
-        )}
-
 
         {/* Knowledge document — sits above the video so the learner sees it
             first. Slim strip, single line, no extra explanation. */}
@@ -508,31 +450,27 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
               <div style={{padding:'36px 40px 28px', background:'linear-gradient(135deg,#0A1F3D,#0072FF)', color:'#fff', textAlign:'center', position:'relative', overflow:'hidden'}}>
                 <div style={{position:'absolute', top:-40, right:-40, width:180, height:180, borderRadius:999, background:'rgba(255,255,255,.07)', pointerEvents:'none'}}/>
                 <div style={{width:64, height:64, borderRadius:18, background:'rgba(255,255,255,.15)', display:'grid', placeItems:'center', fontSize:26, margin:'0 auto'}}>📝</div>
-                <div style={{fontSize:11, fontWeight:700, color:'#9EC9F0', letterSpacing:'.12em', textTransform:'uppercase', marginTop:16}}>Step 1 · Assessment</div>
-                {/* Show the COURSE title as the hero heading (no-video courses
-                    are usually a single assessment, and the lesson title is
-                    often the blank "Untitled Lesson" default). Keep the lesson
-                    title only as a subtitle when it's a real, non-default name. */}
+                <div style={{fontSize:11, fontWeight:700, color:'#9EC9F0', letterSpacing:'.12em', textTransform:'uppercase', marginTop:16}}>Quiz</div>
+                {/* Course title as the hero heading; lesson title only as a
+                    subtitle when it's a real, non-default name. */}
                 <div style={{fontSize:22, fontWeight:800, color:'#fff', marginTop:6, letterSpacing:'-.02em', lineHeight:1.2}}>{course.title}</div>
                 {lesson.title && lesson.title !== 'Untitled Lesson' && (
                   <div style={{fontSize:13, fontWeight:600, color:'#9EC9F0', marginTop:4}}>{lesson.title}</div>
                 )}
                 <div style={{fontSize:13, color:'#C8DDF4', marginTop:8, lineHeight:1.5}}>
                   {stepQuizDone
-                    ? 'You\'ve already passed this assessment.'
-                    : agreementGate
-                      ? 'Answer all questions correctly to pass, then sign the agreement to complete the course.'
-                      : 'Answer all questions correctly to complete this lesson.'}
+                    ? 'You\'ve already passed this quiz.'
+                    : 'Answer all questions correctly to complete this course.'}
                 </div>
               </div>
               <div style={{padding:'22px 40px 28px', textAlign:'center', display:'flex', flexDirection:'column', gap:10, alignItems:'center'}}>
-                {/* Once passed, the assessment is complete — no retake offered. */}
+                {/* Once passed, the quiz is complete — no retake offered. */}
                 {stepQuizDone ? (
                   <div style={{padding:'8px 18px', background:'#E8F7EF', border:'1px solid #C5EBD7', borderRadius:10, fontSize:13, fontWeight:700, color:'#0F7C57', display:'inline-flex', alignItems:'center', gap:8}}>
-                    <span>✓</span> Assessment passed
+                    <span>✓</span> Quiz passed
                   </div>
                 ) : (
-                  <Btn size="lg" onClick={goToQuiz}>Start assessment →</Btn>
+                  <Btn size="lg" onClick={goToQuiz}>Start Quiz →</Btn>
                 )}
               </div>
             </Card>
@@ -698,70 +636,24 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
                 <Icon d="M6 3h9l4 4v14a2 2 0 01-2 2H6a2 2 0 01-2-2V5a2 2 0 012-2zM14 3v5h5M8 13l3 3 5-6" size={16}/>
               </div>
               <div style={{flex:1, minWidth:0}}>
-                <div style={{fontSize:11, fontWeight:700, color:'#0072FF', letterSpacing:'.08em', textTransform:'uppercase'}}>Step 2 · Assessment</div>
+                <div style={{fontSize:11, fontWeight:700, color:'#0072FF', letterSpacing:'.08em', textTransform:'uppercase'}}>Quiz</div>
                 <div style={{fontSize:13, fontWeight:700, color:'#0A1F3D', marginTop:2}}>{stepQuizDone ? 'Passed ✓' : unlocked ? 'Ready to take' : 'Locked — finish the video'}</div>
               </div>
             </div>
             <div style={{marginTop:10, fontSize:11, color:'#5B6A7D'}}>{Math.round(watchedPct)}% watched · {fmt(furthest)} of {fmt(DUR)}</div>
             <div style={{marginTop:6}}><ProgressBar value={Math.min(100, Math.round(watchedPct))} height={4}/></div>
             <div style={{marginTop:12}}>
-              {/* Once passed, the assessment is complete — no retake offered. */}
+              {/* Once passed, the quiz is complete — no retake offered. */}
               {stepQuizDone ? (
                 <div style={{padding:'10px', textAlign:'center', background:'#E8F7EF', border:'1px solid #C5EBD7', borderRadius:10, fontSize:13, fontWeight:700, color:'#0F7C57'}}>
-                  ✓ Assessment passed
+                  ✓ Quiz passed
                 </div>
               ) : (
-                <Btn full disabled={!unlocked} onClick={goToQuiz}>{unlocked ? 'Start assessment →' : `Watch ${Math.ceil(UNLOCK_THRESHOLD*100)}% to unlock`}</Btn>
+                <Btn full disabled={!unlocked} onClick={goToQuiz}>{unlocked ? 'Start Quiz →' : `Watch ${Math.ceil(UNLOCK_THRESHOLD*100)}% to unlock`}</Btn>
               )}
             </div>
           </Card>
         )}
-
-        {/* Agreement CTA — only visible when the course requires one and the
-            learner has not yet signed. Sits BELOW the quiz so the flow reads
-            top-to-bottom: video → quiz → sign. */}
-        {agreementGate && !hasSignedAgreement && (() => {
-          // Agreement unlocks once every lesson is fully done per its own
-          // components (video watched + quiz passed where each exists), which
-          // the component-aware `completed` flag already captures.
-          const allLessonsPassed = lessons.length > 0 && lessons.every(l => !!progress[l.id]?.completed);
-          const agreementUnlocked = allLessonsPassed;
-          const goSign = () => {
-            if (!agreementUnlocked) {
-              setShowNote('Pass every assessment to unlock the agreement.');
-              setTimeout(() => setShowNote(null), 2200);
-              return;
-            }
-            const last = lessons[lessons.length - 1];
-            if (last) {
-              setState({ ...state, course: course.id, activeLesson: last.id });
-              onNav('assessment');
-            }
-          };
-          return (
-            <Card pad={16} style={{borderColor: agreementUnlocked ? '#FCD79B' : '#EEF2F7', background: agreementUnlocked ? 'linear-gradient(180deg,#FFF8EA,#fff)' : '#fff'}}>
-              <div style={{display:'flex', alignItems:'center', gap:10}}>
-                <div style={{width:36, height:36, borderRadius:10, background: agreementUnlocked ? '#FFF1CC' : '#F7F9FC', color: agreementUnlocked ? '#9A6708' : '#8A97A8', display:'grid', placeItems:'center', fontSize:18}}>{agreementUnlocked ? '✍️' : '🔒'}</div>
-                <div style={{flex:1, minWidth:0}}>
-                  <div style={{fontSize:11, fontWeight:700, color: agreementUnlocked ? '#9A6708' : '#8A97A8', letterSpacing:'.08em', textTransform:'uppercase'}}>{hasVideo ? 'Step 3' : 'Step 2'} · Agreement</div>
-                  <div style={{fontSize:13, fontWeight:700, color:'#0A1F3D', marginTop:2}}>{agreementUnlocked ? 'Sign to complete' : 'Unlocks after the assessment'}</div>
-                </div>
-              </div>
-              <div style={{marginTop:8, fontSize:11, color:'#5B6A7D'}}>
-                {agreementUnlocked
-                  ? 'Read the document, then add your signature. The course is only marked Completed once signed.'
-                  : 'Pass every assessment first — then you can read & sign the agreement.'}
-              </div>
-              <div style={{marginTop:12}}>
-                <Btn full variant="soft" disabled={!agreementUnlocked} onClick={goSign}>{agreementUnlocked ? 'Open agreement →' : 'Locked'}</Btn>
-              </div>
-            </Card>
-          );
-        })()}
-
-        {/* Dates intentionally NOT rendered here — they live on the
-            Dashboard course card so the Player stays focused on the task
-            (watch → assess → sign). */}
       </div>
     </div>
   );
@@ -775,18 +667,13 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
 // Lists the steps in one panel — Video, Assessment, and (optionally) Document.
 // Wording intentionally kept neutral (no "compliance" branding) so the same
 // flow works for any course type.
-function ComplianceWizardModal({ courseTitle, hasVideo, agreementRequired, onAcknowledge }: { courseTitle: string; hasVideo: boolean; agreementRequired: boolean; onAcknowledge: () => void }) {
+function ComplianceWizardModal({ courseTitle, hasVideo, onAcknowledge }: { courseTitle: string; hasVideo: boolean; onAcknowledge: () => void }) {
   // Build steps dynamically — only include the video step if a video was uploaded.
-  // Step numbers are sequential so learners never see gaps (e.g. Step 1 → Step 3).
-  let n = 1;
   const steps: { tag: string; text: string }[] = [];
   if (hasVideo) {
-    steps.push({ tag: `Step ${n++} — Watch video`, text: 'Watch the full training video. Skipping ahead and tab switching are disabled.' });
+    steps.push({ tag: 'Watch video', text: 'Watch the full training video. Skipping ahead and tab switching are disabled.' });
   }
-  steps.push({ tag: `Step ${n++} — Assessment`, text: '100% correct answers required to pass. Any wrong answers are shown for re-attempt individually — you don\'t restart the whole quiz.' });
-  if (agreementRequired) {
-    steps.push({ tag: `Step ${n} — Sign agreement`, text: 'Read the complete document, then add your signature to mark the course complete.' });
-  }
+  steps.push({ tag: 'Quiz', text: '100% correct answers required to pass. Any wrong answers are shown for re-attempt individually — you don\'t restart the whole quiz.' });
 
   return (
     <div style={{position:'fixed', inset:0, background:'rgba(10,31,61,.6)', zIndex:2000, display:'grid', placeItems:'center', padding:24}}>
@@ -814,11 +701,10 @@ function ComplianceWizardModal({ courseTitle, hasVideo, agreementRequired, onAck
   );
 }
 
-function ComplianceStepIndicator({ hasVideo, videoDone, quizDone, agreementRequired, agreementDone, completed }: { hasVideo: boolean; videoDone: boolean; quizDone: boolean; agreementRequired: boolean; agreementDone: boolean; completed: boolean }) {
+function ComplianceStepIndicator({ hasVideo, videoDone, quizDone, completed }: { hasVideo: boolean; videoDone: boolean; quizDone: boolean; completed: boolean }) {
   const steps = [
     ...(hasVideo ? [{ label: 'Watch video', done: videoDone }] : []),
-    { label: 'Assessment', done: quizDone },
-    ...(agreementRequired ? [{ label: 'Sign agreement', done: agreementDone }] : []),
+    { label: 'Quiz', done: quizDone },
     { label: 'Completed', done: completed },
   ];
   return (
