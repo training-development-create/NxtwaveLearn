@@ -83,6 +83,8 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
   const [missingVideoName, setMissingVideoName] = useState<string | null>(null);
   const [missingAgreementName, setMissingAgreementName] = useState<string | null>(null);
   const [missingReadingName, setMissingReadingName] = useState<string | null>(null);
+  const [assessmentFile, setAssessmentFile] = useState<File | null>(null);
+  const [missingAssessmentFileName, setMissingAssessmentFileName] = useState<string | null>(null);
 
   // ----- Assignment picker state -----
   type Dept = { id: string; name: string };
@@ -301,6 +303,7 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
         assignManagerIds?: string[]; assignEmployeeIds?: string[];
         csvMatched?: CsvMatchedEmployee[];
         videoFileName?: string; agreementFileName?: string; readingFileName?: string;
+        assessmentFileName?: string;
       };
       if (typeof s.step === 'number') setStep(s.step);
       if (s.mode) setMode(s.mode);
@@ -324,6 +327,7 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
       if (s.videoFileName) setMissingVideoName(s.videoFileName);
       if (s.agreementFileName) setMissingAgreementName(s.agreementFileName);
       if (s.readingFileName) setMissingReadingName(s.readingFileName);
+      if (s.assessmentFileName) setMissingAssessmentFileName(s.assessmentFileName);
       // Try to restore actual File blobs from IndexedDB so the admin doesn't
       // need to re-attach. Async — the missing-name hint stays visible until
       // the file is found (or, if not found, the admin can re-attach).
@@ -332,6 +336,7 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
         getFile(`${base}:video`).then(f => { if (f) { setVideoFile(f); setMissingVideoName(null); } });
         getFile(`${base}:agreement`).then(f => { if (f) { setAgreementFile(f); setMissingAgreementName(null); } });
         getFile(`${base}:reading`).then(f => { if (f) { setReadingFile(f); setMissingReadingName(null); } });
+        getFile(`${base}:assessment`).then(f => { if (f) { setAssessmentFile(f); setMissingAssessmentFileName(null); } });
       }
       // Tell the user we restored. Auto-dismiss after 4s.
       const hadAnything = (s.courseTitle || s.lessonTitle || (s.questions && s.questions.length) || s.videoFileName);
@@ -362,6 +367,7 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
         videoFileName: videoFile?.name ?? missingVideoName ?? null,
         agreementFileName: agreementFile?.name ?? missingAgreementName ?? null,
         readingFileName: readingFile?.name ?? missingReadingName ?? null,
+        assessmentFileName: assessmentFile?.name ?? missingAssessmentFileName ?? null,
       };
       localStorage.setItem(persistKey, JSON.stringify(snapshot));
     } catch (e) {
@@ -371,13 +377,14 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
   }, [persistKey, step, mode, existingCourseId, courseTitle, tag, hue, emoji, blurb, dueInDays,
       lessonTitle, videoDuration, questions, active,
       assignAll, assignDeptIds, assignSubDeptIds, assignManagerIds, assignEmployeeIds,
-      csvMatched, videoFile, agreementFile, readingFile,
-      missingVideoName, missingAgreementName, missingReadingName]);
+      csvMatched, videoFile, agreementFile, readingFile, assessmentFile,
+      missingVideoName, missingAgreementName, missingReadingName, missingAssessmentFileName]);
 
   // Clear the saved missing-name hints once the admin re-picks a file.
   useEffect(() => { if (videoFile) setMissingVideoName(null); }, [videoFile]);
   useEffect(() => { if (agreementFile) setMissingAgreementName(null); }, [agreementFile]);
   useEffect(() => { if (readingFile) setMissingReadingName(null); }, [readingFile]);
+  useEffect(() => { if (assessmentFile) setMissingAssessmentFileName(null); }, [assessmentFile]);
 
   // Persist file blobs to IndexedDB so they survive tab switches & reloads.
   // Only runs after the restore effect has flipped restoredRef so we don't
@@ -394,6 +401,10 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
     if (!user || !restoredRef.current) return;
     putFile(`${user.id}:reading`, readingFile);
   }, [user, readingFile]);
+  useEffect(() => {
+    if (!user || !restoredRef.current) return;
+    putFile(`${user.id}:assessment`, assessmentFile);
+  }, [user, assessmentFile]);
 
   // Read duration from chosen file
   const onPickVideo = (f: File | null) => {
@@ -487,19 +498,15 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
       setError('Publish is taking longer than expected. The course may have been created — please refresh the page to check before retrying.');
     }, 5 * 60 * 1000);
     try {
-      if (!videoFile) throw new Error('Please upload a video file (mandatory).');
       // Parse the optional "days to complete" field into a positive int (or null).
       const dueDaysParsed = dueInDays.trim() ? Math.max(1, Math.min(365, parseInt(dueInDays, 10) || 0)) : 0;
       const dueDaysVal = dueDaysParsed > 0 ? dueDaysParsed : null;
 
       let courseId = existingCourseId;
       if (mode === 'new') {
-        if (!courseTitle.trim()) throw new Error('Course title is required.');
-        // Build the insert payload. due_in_days is included optimistically; if
-        // the column doesn't exist in the project yet, retry without it so the
-        // publish still succeeds.
+        // Title defaults to 'Untitled Course' when left blank — all fields are optional.
         const baseInsert = {
-          title: courseTitle.trim(), tag, blurb, instructor: '', hue, emoji,
+          title: courseTitle.trim() || 'Untitled Course', tag, blurb, instructor: '', hue, emoji,
           duration_label: videoDuration ? `${Math.ceil(videoDuration/60)} min` : '',
           created_by: user?.id ?? null,
           published_at: new Date().toISOString(),
@@ -537,26 +544,28 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
         }
       }
       if (!courseId) throw new Error('Pick or create a course.');
-      if (!lessonTitle.trim()) throw new Error('Lesson title is required.');
 
-      // Upload video
-      const ext = videoFile.name.split('.').pop() || 'mp4';
-      const path = `${courseId}/${crypto.randomUUID()}.${ext}`;
-      setUploadPct(10);
-      const { error: upErr } = await supabase.storage.from('course-videos').upload(path, videoFile, { upsert: false, contentType: videoFile.type });
-      if (upErr) {
-        // Bubble up a clearer error if the bucket is missing.
-        if (/bucket not found/i.test(upErr.message)) {
-          throw new Error('Storage bucket "course-videos" not found. Ask your DBA to apply storage migrations (see supabase/migrations).');
+      // Upload video — optional. Skip entirely if no file was picked.
+      let videoPath: string | null = null;
+      if (videoFile) {
+        const ext = videoFile.name.split('.').pop() || 'mp4';
+        videoPath = `${courseId}/${crypto.randomUUID()}.${ext}`;
+        setUploadPct(10);
+        const { error: upErr } = await supabase.storage.from('course-videos').upload(videoPath, videoFile, { upsert: false, contentType: videoFile.type });
+        if (upErr) {
+          if (/bucket not found/i.test(upErr.message)) {
+            throw new Error('Storage bucket "course-videos" not found. Ask your DBA to apply storage migrations (see supabase/migrations).');
+          }
+          throw upErr;
         }
-        throw upErr;
       }
       setUploadPct(80);
 
       const { count } = await supabase.from('lessons').select('id', { count: 'exact', head: true }).eq('course_id', courseId);
       const position = count ?? 0;
 
-      const dur = videoDuration || 360;
+      // Duration is 0 for video-less lessons; the Player handles DUR=0 gracefully.
+      const dur = videoFile ? (videoDuration || 360) : 0;
 
       // Optional reading material — uploaded to public 'reading-materials' bucket
       // and stamped on the lesson row. Not gated, supplementary only.
@@ -586,27 +595,50 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
         }
       }
 
-      // Insert lesson. If the reading_material_* columns don't exist in this
-      // Supabase project (migration not applied), Postgres rejects the unknown
-      // columns — retry without them so the publish still succeeds.
+      // Optional assessment file — stored in the same public bucket as reading materials.
+      let assessmentFilePath: string | null = null;
+      let assessmentFileNameSaved: string | null = null;
+      if (assessmentFile) {
+        const afExt = assessmentFile.name.split('.').pop() || 'pdf';
+        const afPath = `${courseId}/assessment-${crypto.randomUUID()}.${afExt}`;
+        const { error: afUpErr } = await supabase.storage.from('reading-materials').upload(afPath, assessmentFile, {
+          upsert: false,
+          contentType: assessmentFile.type || 'application/octet-stream',
+        });
+        if (afUpErr) {
+          if (/bucket not found/i.test(afUpErr.message)) {
+            console.warn('[AdminUpload] reading-materials bucket missing — skipping assessment file');
+          } else {
+            throw afUpErr;
+          }
+        } else {
+          assessmentFilePath = afPath;
+          assessmentFileNameSaved = assessmentFile.name;
+        }
+      }
+
+      // Insert lesson. Try with all optional columns first; if any column is
+      // missing (migration not applied), fall back to base columns only.
       let lesson: { id: string } | null = null;
       {
+        const lessonTitle2 = lessonTitle.trim() || 'Untitled Lesson';
         const { data, error: e2 } = await supabase.from('lessons').insert({
-          course_id: courseId, title: lessonTitle.trim(), duration_seconds: dur,
-          video_path: path, position,
+          course_id: courseId, title: lessonTitle2, duration_seconds: dur,
+          video_path: videoPath, position,
           reading_material_path: readingPath, reading_material_name: readingName,
+          assessment_file_path: assessmentFilePath, assessment_file_name: assessmentFileNameSaved,
         }).select('id').single();
         if (e2) {
-          if (/reading_material_(path|name)/i.test(e2.message) || /column .* does not exist/i.test(e2.message)) {
-            console.warn('[AdminUpload] lessons.reading_material_* columns missing — retrying without them');
+          if (/assessment_file_|reading_material_|column .* does not exist/i.test(e2.message)) {
+            console.warn('[AdminUpload] optional lesson columns missing — retrying with base columns only');
             const retry = await supabase.from('lessons').insert({
-              course_id: courseId, title: lessonTitle.trim(), duration_seconds: dur,
-              video_path: path, position,
+              course_id: courseId, title: lessonTitle2, duration_seconds: dur,
+              video_path: videoPath, position,
             }).select('id').single();
             if (retry.error) throw retry.error;
             lesson = retry.data as { id: string };
             if (!readingSkippedReason && readingFile) {
-              readingSkippedReason = 'Lesson columns for reading material are missing. Apply migration 20260429120000_lesson_reading_material.sql, then re-publish to attach reading material.';
+              readingSkippedReason = 'Lesson columns for reading/assessment material are missing. Apply the relevant migrations, then re-publish to attach files.';
             }
           } else {
             throw e2;
@@ -891,11 +923,11 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
     setStep(1); setMode('new'); setExistingCourseId('');
     setCourseTitle(''); setTag('Mandatory'); setHue(HUES[0]); setEmoji(EMOJIS[0]); setBlurb(''); setDueInDays('');
     setLessonTitle(''); setVideoFile(null); setVideoDuration(0); setUploadPct(0);
-    setAgreementFile(null); setReadingFile(null);
+    setAgreementFile(null); setReadingFile(null); setAssessmentFile(null);
     setQuestions([]); setActive(0); setError(null); setParseError(null);
     setAssignAll(true); setAssignDeptIds([]); setAssignSubDeptIds([]); setAssignManagerIds([]); setAssignEmployeeIds([]);
     setCsvMatched([]);
-    setMissingVideoName(null); setMissingAgreementName(null); setMissingReadingName(null);
+    setMissingVideoName(null); setMissingAgreementName(null); setMissingReadingName(null); setMissingAssessmentFileName(null);
     setResumed(false);
   };
 
@@ -975,7 +1007,7 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
                 )}
               </div>
               <div style={{padding:'14px 24px', borderTop:'1px solid #EEF2F7', display:'flex', justifyContent:'flex-end'}}>
-                <Btn onClick={()=>setStep(2)} disabled={mode==='existing' ? !existingCourseId : !courseTitle.trim()}>Next — Video →</Btn>
+                <Btn onClick={()=>setStep(2)} disabled={mode==='existing' ? !existingCourseId : false}>Next — Video →</Btn>
               </div>
             </Card>
           )}
@@ -983,13 +1015,13 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
           {step===2 && (
             <Card pad={0}>
               <div style={{padding:24, borderBottom:'1px solid #EEF2F7'}}>
-                <h3 style={{fontSize:18, color:'#002A4B', margin:0, fontWeight:800}}>Upload the video <span style={{color:'#C2261D'}}>*</span></h3>
-                <div style={{fontSize:13, color:'#5B6A7D', marginTop:4}}>MP4/WebM file. Watch duration is tracked per learner so you'll know who actually watched.</div>
+                <h3 style={{fontSize:18, color:'#002A4B', margin:0, fontWeight:800}}>Upload the video <span style={{fontWeight:500, color:'#8A97A8', fontSize:14}}>(optional)</span></h3>
+                <div style={{fontSize:13, color:'#5B6A7D', marginTop:4}}>MP4/WebM file. Watch duration is tracked per learner. Skip if this lesson is assessment-only.</div>
               </div>
               <div style={{padding:24, display:'grid', gridTemplateColumns:'1fr 1fr', gap:14}}>
                 <div style={{gridColumn:'1 / -1'}}><Label>Video title</Label><TInput value={lessonTitle} onChange={e=>setLessonTitle(e.target.value)} placeholder="What POSH means — your rights at work"/></div>
                 <div style={{gridColumn:'1 / -1'}}>
-                  <Label>Video file (mandatory)</Label>
+                  <Label>Video file <span style={{fontWeight:500, color:'#8A97A8'}}>(optional)</span></Label>
                   <label style={{display:'block', padding:24, border:`2px dashed ${videoFile?'#17A674':'#CCEAFF'}`, background: videoFile?'#F0FCF5':'#F7FBFF', borderRadius:12, cursor:'pointer', textAlign:'center'}}>
                     <input type="file" accept="video/*" style={{display:'none'}} onChange={e=>onPickVideo(e.target.files?.[0] || null)}/>
                     {videoFile ? (
@@ -1047,7 +1079,7 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
               </div>
               <div style={{padding:'14px 24px', borderTop:'1px solid #EEF2F7', display:'flex', justifyContent:'space-between'}}>
                 <Btn variant="ghost" onClick={()=>setStep(1)}>← Back</Btn>
-                <Btn onClick={()=>setStep(3)} disabled={!lessonTitle.trim() || !videoFile}>Next — Assessment →</Btn>
+                <Btn onClick={()=>setStep(3)}>Next — Assessment →</Btn>
               </div>
             </Card>
           )}
@@ -1055,10 +1087,50 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
           {step===3 && (
             <Card pad={0}>
               <div style={{padding:'20px 24px', borderBottom:'1px solid #EEF2F7'}}>
-                <h3 style={{fontSize:18, color:'#002A4B', margin:0, fontWeight:800}}>Upload assessment</h3>
-                <div style={{fontSize:13, color:'#5B6A7D', marginTop:4}}>Upload a PDF, DOCX or TXT with questions, options & correct answers. AI will parse it automatically.</div>
+                <h3 style={{fontSize:18, color:'#002A4B', margin:0, fontWeight:800}}>Assessment <span style={{fontWeight:500, color:'#8A97A8', fontSize:14}}>(optional)</span></h3>
+                <div style={{fontSize:13, color:'#5B6A7D', marginTop:4}}>Upload the assessment document for learners, or let AI extract MCQ questions — or both. All optional.</div>
               </div>
               <div style={{padding:24}}>
+
+                {/* Direct assessment file upload — stored as-is for learner reference */}
+                <div style={{marginBottom:20}}>
+                  <Label>Assessment document <span style={{fontWeight:500, color:'#8A97A8'}}>(optional)</span></Label>
+                  <div style={{fontSize:12, color:'#5B6A7D', marginBottom:8}}>Learners will see a download link alongside the video. PDF, DOCX, PPTX or TXT.</div>
+                  <label style={{display:'block', padding:18, border:`2px dashed ${assessmentFile?'#17A674':'#CCEAFF'}`, background: assessmentFile?'#F0FCF5':'#F7FBFF', borderRadius:10, cursor:'pointer', textAlign:'center'}}>
+                    <input type="file" accept=".pdf,.docx,.doc,.txt,.pptx,.ppt" style={{display:'none'}} onChange={e=>setAssessmentFile(e.target.files?.[0] || null)}/>
+                    {assessmentFile ? (
+                      <div>
+                        <div style={{fontSize:24, marginBottom:4}}>📝</div>
+                        <div style={{fontSize:13, fontWeight:700, color:'#0A1F3D'}}>{assessmentFile.name}</div>
+                        <div style={{fontSize:11, color:'#5B6A7D', marginTop:2}}>{(assessmentFile.size/1024).toFixed(0)} KB · click to change</div>
+                      </div>
+                    ) : missingAssessmentFileName ? (
+                      <div>
+                        <div style={{fontSize:24, marginBottom:4}}>📎</div>
+                        <div style={{fontSize:13, fontWeight:700, color:'#9A6708'}}>Re-attach: {missingAssessmentFileName}</div>
+                        <div style={{fontSize:11, color:'#5B6A7D', marginTop:2}}>Pick the file again to keep it in this draft, or skip — it's optional.</div>
+                      </div>
+                    ) : (
+                      <div>
+                        <div style={{fontSize:24, marginBottom:4}}>📝</div>
+                        <div style={{fontSize:13, fontWeight:700, color:'#0A1F3D'}}>Upload assessment document</div>
+                        <div style={{fontSize:11, color:'#5B6A7D', marginTop:2}}>Learners can open this file alongside the video</div>
+                      </div>
+                    )}
+                  </label>
+                  {assessmentFile && (
+                    <button type="button" onClick={()=>setAssessmentFile(null)} style={{marginTop:8, padding:'4px 10px', background:'#fff', border:'1px solid #FCE1DE', color:'#C2261D', borderRadius:6, fontSize:11, fontWeight:600, cursor:'pointer'}}>Remove assessment file</button>
+                  )}
+                </div>
+
+                {/* Divider */}
+                <div style={{display:'flex', alignItems:'center', gap:10, marginBottom:18}}>
+                  <div style={{flex:1, height:1, background:'#EEF2F7'}}/>
+                  <span style={{fontSize:11, fontWeight:700, color:'#8A97A8', letterSpacing:'.06em', textTransform:'uppercase'}}>AI Quiz Builder (optional)</span>
+                  <div style={{flex:1, height:1, background:'#EEF2F7'}}/>
+                </div>
+                <div style={{fontSize:12, color:'#5B6A7D', marginBottom:12}}>Upload a PDF, DOCX or TXT with questions and answers — AI will parse them into MCQ questions automatically.</div>
+
                 <label style={{display:'block', padding:24, border:'2px dashed #CCEAFF', background:'#F7FBFF', borderRadius:12, cursor: parsing?'wait':'pointer', textAlign:'center', opacity: parsing?.7:1}}>
                   <input type="file" accept=".pdf,.docx,.doc,.txt" style={{display:'none'}} disabled={parsing} onChange={e=>onPickQuiz(e.target.files?.[0] || null)}/>
                   <div style={{fontSize:32, marginBottom:6}}>{parsing ? '🤖' : '📄'}</div>
@@ -1120,7 +1192,7 @@ export function AdminUpload({ onNav }: { onNav: Nav }) {
               </div>
               <div style={{padding:'14px 24px', borderTop:'1px solid #EEF2F7', display:'flex', justifyContent:'space-between'}}>
                 <Btn variant="ghost" onClick={()=>setStep(2)}>← Back</Btn>
-                <Btn onClick={()=>setStep(4)} disabled={questions.length===0}>Next — Publish →</Btn>
+                <Btn onClick={()=>setStep(4)}>Next — Publish →</Btn>
               </div>
             </Card>
           )}

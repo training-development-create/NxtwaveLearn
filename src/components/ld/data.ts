@@ -29,6 +29,9 @@ export type Lesson = {
   // Optional reading material — not gated, purely supplementary.
   reading_material_path: string | null;
   reading_material_name: string | null;
+  // Optional assessment file — the raw assessment document for learner reference.
+  assessment_file_path: string | null;
+  assessment_file_name: string | null;
 };
 
 export type LessonProgress = {

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { useCourseLessons, saveLessonProgress, getVideoUrl, getReadingMaterialUrl } from "./queries";
+import { useCourseLessons, saveLessonProgress, getVideoUrl, getReadingMaterialUrl, getAssessmentFileUrl } from "./queries";
 import { useAuth } from "./auth";
 import { supabase } from "@/integrations/supabase/client";
 import { Btn, Card, ProgressBar, Icon, EmptyState } from "./ui";
@@ -386,7 +386,9 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
   const effectiveWatched = Math.max(furthest, serverWatched);
   const watchedPct = DUR ? (effectiveWatched / DUR) * 100 : 0;
   const serverCompleted = !!(lesson && progress[lesson.id]?.completed);
-  const unlocked = serverCompleted || watchedPct >= UNLOCK_THRESHOLD * 100;
+  // If the lesson has no video, assessment is immediately accessible.
+  const hasVideo = !!lesson.video_path;
+  const unlocked = !hasVideo || serverCompleted || watchedPct >= UNLOCK_THRESHOLD * 100;
   const goToQuiz = async () => {
     // Save current watch position; do NOT mark completed — that happens on assessment pass.
     if (user && lesson) await saveLessonProgress(user.id, lesson.id, furthest, !!progress[lesson.id]?.completed);
@@ -409,7 +411,8 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
   // Compliance progression for THIS lesson
   const lessonProgress = lesson ? progress[lesson.id] : null;
   const lessonAttempts = lesson ? (attemptsByLesson[lesson.id] || []) : [];
-  const stepVideoDone = !!lessonProgress?.completed || (DUR > 0 && (lessonProgress?.watched_seconds ?? 0) >= DUR);
+  // No-video lessons skip the watch step automatically.
+  const stepVideoDone = !hasVideo || !!lessonProgress?.completed || (DUR > 0 && (lessonProgress?.watched_seconds ?? 0) >= DUR);
   const stepQuizDone = lessonAttempts.some(a => a.passed);
   const agreementGate = !!course?.agreement_required;
   const stepAgreementDone = !agreementGate || hasSignedAgreement;
@@ -435,6 +438,7 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
 
         {/* Compliance step indicator: Watch → Assessment → Sign → Done */}
         <ComplianceStepIndicator
+          hasVideo={hasVideo}
           videoDone={stepVideoDone}
           quizDone={stepQuizDone}
           agreementRequired={agreementGate}
@@ -470,6 +474,22 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
                 <span style={{fontSize:16}}>📘</span>
                 <span style={{flex:1, minWidth:0, fontSize:13, fontWeight:600, color:'#0A1F3D', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{label}</span>
                 <span style={{fontSize:12, fontWeight:700, color:'#9A6708'}}>Open ↗</span>
+              </a>
+            </div>
+          );
+        })()}
+
+        {/* Assessment document — downloadable reference file (PDF/DOCX etc.) */}
+        {lesson.assessment_file_path && (() => {
+          const url = getAssessmentFileUrl(lesson.assessment_file_path);
+          if (!url) return null;
+          const label = lesson.assessment_file_name || 'Assessment document';
+          return (
+            <div style={{marginBottom:14}}>
+              <a href={url} target="_blank" rel="noreferrer" style={{textDecoration:'none', display:'flex', alignItems:'center', gap:10, padding:'10px 14px', background:'#F0F9FF', border:'1px solid #CCEAFF', borderRadius:10}}>
+                <span style={{fontSize:16}}>📝</span>
+                <span style={{flex:1, minWidth:0, fontSize:13, fontWeight:600, color:'#0A1F3D', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{label}</span>
+                <span style={{fontSize:12, fontWeight:700, color:'#0072FF'}}>Open ↗</span>
               </a>
             </div>
           );
@@ -725,9 +745,9 @@ function ComplianceWizardModal({ courseTitle, agreementRequired, onAcknowledge }
   );
 }
 
-function ComplianceStepIndicator({ videoDone, quizDone, agreementRequired, agreementDone, completed }: { videoDone: boolean; quizDone: boolean; agreementRequired: boolean; agreementDone: boolean; completed: boolean }) {
+function ComplianceStepIndicator({ hasVideo, videoDone, quizDone, agreementRequired, agreementDone, completed }: { hasVideo: boolean; videoDone: boolean; quizDone: boolean; agreementRequired: boolean; agreementDone: boolean; completed: boolean }) {
   const steps = [
-    { label: 'Watch video', done: videoDone },
+    ...(hasVideo ? [{ label: 'Watch video', done: videoDone }] : []),
     { label: 'Assessment', done: quizDone },
     ...(agreementRequired ? [{ label: 'Sign agreement', done: agreementDone }] : []),
     { label: 'Completed', done: completed },
