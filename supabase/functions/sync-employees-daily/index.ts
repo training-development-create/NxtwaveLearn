@@ -141,38 +141,69 @@ async function fetchDarwinRecords(apiKey: string, datasetKey: string): Promise<D
   const url = `${baseUrl.replace(/\/$/, "")}${path.startsWith("/") ? path : "/" + path}`;
   const basic = btoa(`${username}:${password}`);
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${basic}`,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify({ api_key: apiKey, datasetKey }),
-  });
+  // Retry with backoff + per-attempt timeout. Darwinbox can be slow or flaky;
+  // a single transient failure used to surface as a hard 500 on the whole sync.
+  const MAX_ATTEMPTS = 3;
+  const TIMEOUT_MS = 45_000;
+  let lastErr: unknown = null;
 
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(`Darwinbox returned ${res.status}: ${txt.slice(0, 500)}`);
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          Authorization: `Basic ${basic}`,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({ api_key: apiKey, datasetKey }),
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        const txt = await res.text().catch(() => "");
+        throw new Error(`Darwinbox returned HTTP ${res.status}: ${txt.slice(0, 300)}`);
+      }
+
+      const txt = await res.text();
+      let raw: Record<string, unknown>;
+      try {
+        raw = JSON.parse(txt) as Record<string, unknown>;
+      } catch {
+        throw new Error(`Darwinbox returned non-JSON (first 200 chars): ${txt.slice(0, 200)}`);
+      }
+
+      const data = raw.data as Record<string, unknown> | undefined;
+      const response = raw.response as Record<string, unknown> | undefined;
+      const records: DarwinRecord[] =
+        (raw.employee_data as DarwinRecord[] | undefined) ??
+        (raw.employees as DarwinRecord[] | undefined) ??
+        (data?.employee_data as DarwinRecord[] | undefined) ??
+        (data?.employees as DarwinRecord[] | undefined) ??
+        (response?.employee_data as DarwinRecord[] | undefined) ??
+        (response?.employees as DarwinRecord[] | undefined) ??
+        [];
+      return Array.isArray(records) ? records : [];
+    } catch (e) {
+      lastErr = e;
+      console.warn(`[sync] Darwinbox fetch attempt ${attempt}/${MAX_ATTEMPTS} failed: ${e instanceof Error ? e.message : e}`);
+      if (attempt < MAX_ATTEMPTS) {
+        await new Promise((r) => setTimeout(r, attempt * 2000)); // 2s, 4s backoff
+      }
+    } finally {
+      clearTimeout(timer);
+    }
   }
-
-  const txt = await res.text();
-  const raw = JSON.parse(txt);
-  const records: DarwinRecord[] =
-    (raw.employee_data as DarwinRecord[] | undefined) ??
-    (raw.employees as DarwinRecord[] | undefined) ??
-    (raw.data?.employee_data as DarwinRecord[] | undefined) ??
-    (raw.data?.employees as DarwinRecord[] | undefined) ??
-    (raw.response?.employee_data as DarwinRecord[] | undefined) ??
-    (raw.response?.employees as DarwinRecord[] | undefined) ??
-    [];
-  return Array.isArray(records) ? records : [];
+  throw lastErr instanceof Error ? lastErr : new Error("Darwinbox fetch failed after retries");
 }
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
   if (req.method !== "POST") return jsonResponse(405, { error: "Method not allowed" });
 
+  try {
   const cronSecret = Deno.env.get("DARWIN_SYNC_CRON_SECRET");
   if (cronSecret) {
     const got = req.headers.get("x-cron-secret");
@@ -678,4 +709,14 @@ Deno.serve(async (req) => {
       sample_record_keys: sampleKeys.slice(0, 60),
     },
   });
+  } catch (e) {
+    // Any unhandled error returns a readable JSON reason instead of an opaque
+    // non-2xx. No exit-marking happens on this path, so it can't damage data.
+    console.error("[sync] unhandled error:", e);
+    return jsonResponse(500, {
+      ok: false,
+      error: e instanceof Error ? e.message : String(e),
+      stack: e instanceof Error ? (e.stack ?? "").split("\n").slice(0, 6).join(" | ") : undefined,
+    });
+  }
 });
