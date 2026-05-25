@@ -96,10 +96,15 @@ export function useUserCourses(userId: string | null) {
     const { data: lessons } = await lessonsQuery;
     const signedCourseIds = new Set(((signedSigs || []) as { course_id: string }[]).map(s => s.course_id));
     const lessonByCourse = new Map<string, { id: string; duration: number }[]>();
+    // Courses that contain at least one real video (raw duration > 0, before the
+    // Math.max(1,…) floor below). Drives hiding all video wording for quiz-only
+    // courses in the learner portal.
+    const videoCourseIds = new Set<string>();
     (lessons || []).forEach((l: { id: string; course_id: string; duration_seconds: number }) => {
       const arr = lessonByCourse.get(l.course_id) || [];
       arr.push({ id: l.id, duration: Math.max(1, Math.round(l.duration_seconds || 0)) });
       lessonByCourse.set(l.course_id, arr);
+      if ((l.duration_seconds || 0) > 0) videoCourseIds.add(l.course_id);
     });
     const progressByLesson = new Map<string, { completed: boolean; watched_seconds: number }>();
     (progress || []).forEach((p: { lesson_id: string; completed: boolean; watched_seconds: number }) => {
@@ -141,6 +146,7 @@ export function useUserCourses(userId: string | null) {
         started,
         agreement_required: agreementRequired,
         agreement_signed: agreementSigned,
+        has_video: videoCourseIds.has(c.id),
       };
     });
     setItems(out);

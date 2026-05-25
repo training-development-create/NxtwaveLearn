@@ -118,6 +118,8 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
   // Headings show the lesson name when meaningful, otherwise fall back to the
   // course title so learners never see "Untitled Lesson".
   const lessonName = lesson.title && lesson.title !== 'Untitled Lesson' ? lesson.title : null;
+  // No video anywhere in this course → never say "Video" in the assessment UI.
+  const courseHasVideo = lessons.some(l => !!l.video_path || l.duration > 0);
 
   if (stage === 'intro') {
     return (
@@ -342,7 +344,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
     <div style={{padding:'24px 40px 48px', maxWidth:1180, animation:'fadeUp .3s'}}>
       <div style={{display:'flex', alignItems:'center', gap:16, marginBottom:20}}>
         <div>
-          <div style={{fontSize:11, fontWeight:600, color:'#8A97A8', letterSpacing:'.06em', textTransform:'uppercase'}}>{retakeIndices !== null ? `Retake · ${retakeIndices.length} wrong question${retakeIndices.length === 1 ? '' : 's'}` : `Assessment · Video ${lessonIdx+1} of ${lessons.length}`}</div>
+          <div style={{fontSize:11, fontWeight:600, color:'#8A97A8', letterSpacing:'.06em', textTransform:'uppercase'}}>{retakeIndices !== null ? `Retake · ${retakeIndices.length} wrong question${retakeIndices.length === 1 ? '' : 's'}` : `Assessment${courseHasVideo ? ` · Video ${lessonIdx+1} of ${lessons.length}` : ''}`}</div>
           <h2 style={{fontSize:22, color:'#0A1F3D', margin:'4px 0 0', letterSpacing:'-.02em', fontWeight:700}}>{lessonName || course.title}</h2>
         </div>
         <div style={{marginLeft:'auto', display:'flex', gap:10, alignItems:'center'}}>

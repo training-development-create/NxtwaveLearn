@@ -58,6 +58,9 @@ export type CourseWithProgress = Course & {
   progress: number; // 0..100
   enrolled: boolean;
   started: boolean; // user has watched at least some of any lesson in this course
+  // True when at least one lesson has a real video. When false, the learner UI
+  // must not show any video wording ("videos", watch progress, etc.).
+  has_video: boolean;
   // Compliance — agreement signing
   agreement_required: boolean;
   agreement_signed: boolean;

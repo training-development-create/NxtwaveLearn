@@ -652,7 +652,12 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
             <div style={{fontSize:11, fontWeight:600, color:'#8A97A8', letterSpacing:'.06em', textTransform:'uppercase'}}>In this course</div>
             <div style={{fontSize:14, fontWeight:700, color:'#0A1F3D', marginTop:4}}>{course.title}</div>
             <div style={{marginTop:10}}><ProgressBar value={courseProgress} showLabel/></div>
-            <div style={{fontSize:11, color:'#5B6A7D', marginTop:6}}>{lessons.filter(l=>progress[l.id]?.completed).length} of {lessons.length} videos complete</div>
+            {(() => {
+              const courseHasVideo = lessons.some(l => !!l.video_path || l.duration > 0);
+              const doneCount = lessons.filter(l=>progress[l.id]?.completed).length;
+              const noun = courseHasVideo ? (lessons.length === 1 ? 'video' : 'videos') : (lessons.length === 1 ? 'lesson' : 'lessons');
+              return <div style={{fontSize:11, color:'#5B6A7D', marginTop:6}}>{doneCount} of {lessons.length} {noun} complete</div>;
+            })()}
           </div>
           <div style={{maxHeight:360, overflowY:'auto'}}>
             {lessons.map((l,i) => {

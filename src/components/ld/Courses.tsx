@@ -71,7 +71,11 @@ export function Courses({ onNav, initialQuery }: { onNav: Nav; initialQuery?: st
                 <p style={{fontSize:12, color:'#5B6A7D', margin:'5px 0 12px', lineHeight:1.45, minHeight:34}}>{c.blurb}</p>
                 <div style={{display:'flex', alignItems:'center', gap:8, marginBottom:10, fontSize:12, color:'#5B6A7D'}}>
                   <span>{c.instructor || '—'}</span>
-                  <span style={{marginLeft:'auto'}}>{c.lessons_total} videos · {c.duration_label || '—'}</span>
+                  <span style={{marginLeft:'auto'}}>
+                    {c.has_video
+                      ? <>{c.lessons_total} {c.lessons_total === 1 ? 'video' : 'videos'} · {c.duration_label || '—'}</>
+                      : <>{c.lessons_total} {c.lessons_total === 1 ? 'lesson' : 'lessons'}</>}
+                  </span>
                 </div>
                 {isInProgress(c) || c.progress === 100
                   ? <ProgressBar value={c.progress} showLabel/>
