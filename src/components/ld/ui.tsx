@@ -137,8 +137,8 @@ export function Btn({ children, variant='primary', size='md', full, onClick, dis
   );
 }
 
-export function Card({ children, pad=24, style, onClick }: { children:ReactNode; pad?:number; style?:CSSProperties; onClick?:()=>void }) {
-  return <div onClick={onClick} style={{background:'#fff', borderRadius:16, border:'1px solid #EEF2F7', boxShadow:'0 2px 6px rgba(0,42,75,.04)', padding:pad, ...style}}>{children}</div>;
+export function Card({ children, pad=24, style, onClick, className }: { children:ReactNode; pad?:number; style?:CSSProperties; onClick?:()=>void; className?:string }) {
+  return <div className={className} onClick={onClick} style={{background:'#fff', borderRadius:16, border:'1px solid #EEF2F7', boxShadow:'0 2px 6px rgba(0,42,75,.04)', padding:pad, ...style}}>{children}</div>;
 }
 
 export function Chip({ children, color='#0072FF', bg, style }: { children:ReactNode; color?:string; bg?:string; style?:CSSProperties }) {

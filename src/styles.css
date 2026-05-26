@@ -201,3 +201,8 @@ input, textarea, select, [contenteditable], [contenteditable="true"] { caret-col
   .quiz-action-retry { animation: none; }
   .quiz-action-btn { transition: none; }
 }
+
+/* ---- Subtle interactive lift for result cards / stat tiles --------------- */
+.quiz-lift { transition: transform .16s ease, box-shadow .22s ease; }
+.quiz-lift:hover { transform: translateY(-3px); box-shadow: 0 12px 28px rgba(0,42,75,.12); }
+@media (prefers-reduced-motion: reduce) { .quiz-lift { transition: none; } .quiz-lift:hover { transform: none; } }

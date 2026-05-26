@@ -125,28 +125,28 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
     };
     const onNext = () => { if (nextLesson) { setState({ ...state, activeLesson: nextLesson.id }); onNav('player'); } else onNav('courses'); };
     return (
-      <div style={{padding:'28px 40px 48px', maxWidth:1080, animation:'fadeUp .4s'}}>
-        <div style={{display:'grid', gridTemplateColumns:'1.2fr 1fr', gap:20}}>
-          <Card pad={0} style={{overflow:'hidden'}}>
-            <div style={{padding:'36px 40px', background: pass?'linear-gradient(135deg,#0F7C57,#17A674)':'#0A1F3D', color:'#fff'}}>
-              <div style={{width:52, height:52, borderRadius:14, background:'rgba(255,255,255,.14)', display:'grid', placeItems:'center', fontSize:24}}>{pass ? '✓' : '!'}</div>
-              <div style={{fontSize:11, fontWeight:600, letterSpacing:'.12em', color:pass?'#D9F4E6':'#7FDBFF', marginTop:18, textTransform:'uppercase'}}>{pass?'Passed':'Not yet passed'}</div>
-              <div style={{fontSize:48, fontWeight:700, letterSpacing:'-.03em', marginTop:4, lineHeight:1}}>{pct}%</div>
+      <div style={{padding:'24px 40px 28px', maxWidth:1200, margin:'0 auto', animation:'fadeUp .4s'}}>
+        <div style={{display:'grid', gridTemplateColumns:'1.25fr 1fr', gap:24, alignItems:'center'}}>
+          <Card pad={0} className="quiz-lift" style={{overflow:'hidden'}}>
+            <div style={{padding:'28px 36px', background: pass?'linear-gradient(135deg,#0F7C57,#17A674)':'#0A1F3D', color:'#fff'}}>
+              <div style={{width:48, height:48, borderRadius:14, background:'rgba(255,255,255,.14)', display:'grid', placeItems:'center', fontSize:24}}>{pass ? '✓' : '!'}</div>
+              <div style={{fontSize:11, fontWeight:600, letterSpacing:'.12em', color:pass?'#D9F4E6':'#7FDBFF', marginTop:14, textTransform:'uppercase'}}>{pass?'Passed':'Not yet passed'}</div>
+              <div style={{fontSize:54, fontWeight:800, letterSpacing:'-.03em', marginTop:4, lineHeight:1}}>{pct}%</div>
               <div style={{fontSize:13, color:pass?'#D9F4E6':'#C8DDF4', marginTop:6}}>{correct} of {questions.length} correct · {pass ? (nextLesson ? `Next ${courseHasVideo ? 'video' : 'lesson'} unlocked` : 'Course complete') : `${wrongIndices.length} wrong — re-attempt just those questions`}</div>
             </div>
-            <div style={{padding:'30px 40px 32px'}}>
+            <div style={{padding:'22px 36px 24px'}}>
               {/* Show only the final result + score; correct answers are intentionally
                   hidden so retake attempts remain a real assessment. */}
               <div style={{display:'flex', gap:16, alignItems:'stretch'}}>
-                <div style={{flex:1, padding:'18px 20px', background:'#F7F9FC', borderRadius:10, border:'1px solid #EEF2F7'}}>
+                <div className="quiz-lift" style={{flex:1, padding:'18px 20px', background:'#F7F9FC', borderRadius:10, border:'1px solid #EEF2F7'}}>
                   <div style={{fontSize:11, fontWeight:700, color:'#8A97A8', letterSpacing:'.08em', textTransform:'uppercase'}}>Result</div>
                   <div style={{fontSize:22, fontWeight:800, color: pass?'#17A674':'#C2261D', marginTop:6}}>{pass ? 'Passed ✓' : 'Failed ✕'}</div>
                 </div>
-                <div style={{flex:1, padding:'18px 20px', background:'#F7F9FC', borderRadius:10, border:'1px solid #EEF2F7'}}>
+                <div className="quiz-lift" style={{flex:1, padding:'18px 20px', background:'#F7F9FC', borderRadius:10, border:'1px solid #EEF2F7'}}>
                   <div style={{fontSize:11, fontWeight:700, color:'#8A97A8', letterSpacing:'.08em', textTransform:'uppercase'}}>Marks</div>
                   <div style={{fontSize:22, fontWeight:800, color:'#0A1F3D', marginTop:6}}>{correct} / {questions.length}</div>
                 </div>
-                <div style={{flex:1, padding:'18px 20px', background:'#F7F9FC', borderRadius:10, border:'1px solid #EEF2F7'}}>
+                <div className="quiz-lift" style={{flex:1, padding:'18px 20px', background:'#F7F9FC', borderRadius:10, border:'1px solid #EEF2F7'}}>
                   <div style={{fontSize:11, fontWeight:700, color:'#8A97A8', letterSpacing:'.08em', textTransform:'uppercase'}}>Score</div>
                   <div style={{fontSize:22, fontWeight:800, color:'#0A1F3D', marginTop:6}}>{pct}%</div>
                 </div>
@@ -162,7 +162,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
           {/* Right column — content vertically centred so the action button
               sits mid-page on the right side (not at the very top or bottom). */}
           <div style={{display:'flex', flexDirection:'column', gap:16, justifyContent:'center'}}>
-            <Card pad={22}>
+            <Card pad={22} className="quiz-lift">
               <div style={{fontSize:13, fontWeight:700, color:'#0A1F3D', marginBottom:8}}>What happens next</div>
               <div style={{fontSize:13, color:'#3B4A5E', lineHeight:1.6}}>
                 {pass
