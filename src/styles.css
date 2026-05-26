@@ -164,3 +164,40 @@ input, textarea, select, [contenteditable], [contenteditable="true"] { caret-col
     color: var(--color-foreground);
   }
 }
+
+/* ---- Quiz result action buttons (top action bar) -------------------------
+   Interactive, eye-catching CTAs. Inline styles can't do :hover/keyframes,
+   so the lift + pulse live here; the buttons set their own colours inline. */
+.quiz-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  border-radius: 12px;
+  padding: 13px 22px;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: .01em;
+  cursor: pointer;
+  transition: transform .15s ease, box-shadow .2s ease, filter .15s ease;
+  will-change: transform;
+}
+.quiz-action-btn:hover { transform: translateY(-2px) scale(1.02); filter: brightness(1.06); }
+.quiz-action-btn:active { transform: translateY(0) scale(.99); }
+.quiz-action-btn:focus-visible { outline: 3px solid rgba(0,114,255,.4); outline-offset: 2px; }
+
+.quiz-action-primary { background: linear-gradient(90deg,#00C6FF,#0072FF); color: #fff; box-shadow: 0 8px 22px rgba(0,114,255,.34); }
+.quiz-action-success { background: linear-gradient(90deg,#22D38A,#0F9D6B); color: #fff; box-shadow: 0 8px 22px rgba(23,166,116,.34); }
+.quiz-action-home { background: #fff; color: #0A1F3D; border: 1.5px solid #DDE4ED; box-shadow: 0 2px 8px rgba(0,42,75,.06); }
+.quiz-action-home:hover { border-color: #0072FF; color: #0072FF; }
+
+/* Retake CTA gently pulses to draw the eye after a failed attempt. */
+.quiz-action-retry { background: linear-gradient(90deg,#FF8A4C,#F2542D); color: #fff; animation: quizPulse 2.2s ease-in-out infinite; }
+@keyframes quizPulse {
+  0%, 100% { box-shadow: 0 6px 18px rgba(242,84,45,.30); }
+  50%      { box-shadow: 0 12px 30px rgba(242,84,45,.52); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .quiz-action-retry { animation: none; }
+  .quiz-action-btn { transition: none; }
+}

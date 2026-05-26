@@ -130,6 +130,22 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
     const onNext = () => { if (nextLesson) { setState({ ...state, activeLesson: nextLesson.id }); onNav('player'); } else onNav('courses'); };
     return (
       <div style={{padding:'28px 40px 48px', maxWidth:1080, animation:'fadeUp .4s'}}>
+        {/* Top action bar — primary action (retake / next) + Back to Home,
+            made prominent + interactive so the next step is obvious. */}
+        <div style={{display:'flex', gap:12, marginBottom:20, alignItems:'center', flexWrap:'wrap'}}>
+          {pass ? (
+            <button className="quiz-action-btn quiz-action-success" onClick={onNext}>
+              {nextLesson ? <>Start next lesson <span aria-hidden>→</span></> : <>Done <span aria-hidden>→</span></>}
+            </button>
+          ) : (
+            <button className="quiz-action-btn quiz-action-retry" onClick={onRetryWrong}>
+              <span aria-hidden style={{fontSize:16}}>↻</span> Re-attempt {wrongIndices.length} wrong question{wrongIndices.length === 1 ? '' : 's'}
+            </button>
+          )}
+          <button className="quiz-action-btn quiz-action-home" onClick={()=>onNav('courses')}>
+            <span aria-hidden>🏠</span> Back to Home
+          </button>
+        </div>
         <div style={{display:'grid', gridTemplateColumns:'1.2fr 1fr', gap:20}}>
           <Card pad={0} style={{overflow:'hidden'}}>
             <div style={{padding:'36px 40px', background: pass?'linear-gradient(135deg,#0F7C57,#17A674)':'#0A1F3D', color:'#fff'}}>
@@ -181,14 +197,6 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
                   </div>
                 </div>
               )}
-              <div style={{marginTop:22, display:'flex', gap:10, flexWrap:'wrap'}}>
-                {pass ? (
-                  <Btn size="lg" onClick={onNext}>{nextLesson ? 'Start next lesson →' : 'Back to Home →'}</Btn>
-                ) : (
-                  <Btn size="lg" onClick={onRetryWrong}>Re-attempt wrong questions →</Btn>
-                )}
-                <Btn variant="ghost" size="lg" onClick={()=>onNav('courses')}>Back to Home</Btn>
-              </div>
             </div>
           </Card>
 
