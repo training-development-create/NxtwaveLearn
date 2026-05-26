@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useUserCourses, ensureEnrollment } from "./queries";
 import { useAuth } from "./auth";
-import { Btn, Chip, ProgressBar, EmptyState } from "./ui";
+import { Btn, Chip, EmptyState } from "./ui";
 import type { Nav } from "./App";
 import type { CourseWithProgress } from "./data";
 
@@ -68,18 +68,14 @@ export function Courses({ onNav, initialQuery }: { onNav: Nav; initialQuery?: st
               </div>
               <div style={{padding:16}}>
                 <div style={{fontSize:15, fontWeight:700, color:'#0A1F3D', letterSpacing:'-.01em'}}>{c.title}</div>
-                <p style={{fontSize:12, color:'#5B6A7D', margin:'5px 0 12px', lineHeight:1.45, minHeight:34}}>{c.blurb}</p>
-                <div style={{display:'flex', alignItems:'center', gap:8, marginBottom:10, fontSize:12, color:'#5B6A7D'}}>
-                  <span>{c.instructor || '—'}</span>
-                  <span style={{marginLeft:'auto'}}>
-                    {c.has_video
-                      ? <>{c.lessons_total} {c.lessons_total === 1 ? 'video' : 'videos'} · {c.duration_label || '—'}</>
-                      : <>{c.lessons_total} {c.lessons_total === 1 ? 'lesson' : 'lessons'}</>}
-                  </span>
-                </div>
-                {isInProgress(c) || c.progress === 100
-                  ? <ProgressBar value={c.progress} showLabel/>
-                  : <Btn full variant="soft" size="sm">{c.lessons_total ? 'Start Quiz →' : 'No lessons yet'}</Btn>}
+                <p style={{fontSize:12, color:'#5B6A7D', margin:'5px 0 14px', lineHeight:1.45, minHeight:34}}>{c.blurb}</p>
+                <Btn full variant="soft" size="sm">
+                  {c.progress === 100
+                    ? 'Completed ✓'
+                    : isInProgress(c)
+                      ? 'Continue →'
+                      : 'Start Quiz →'}
+                </Btn>
               </div>
             </div>
           ))}
@@ -91,16 +87,16 @@ export function Courses({ onNav, initialQuery }: { onNav: Nav; initialQuery?: st
   return (
     <div style={{padding:'18px 0 56px'}}>
       <div style={{display:'flex', alignItems:'center', gap:12, marginBottom:12}}>
-        <div style={{fontSize:18, fontWeight:800, color:'#0A1F3D'}}>Courses</div>
+        <div style={{fontSize:18, fontWeight:800, color:'#0A1F3D'}}>Assessments</div>
         <div style={{marginLeft:'auto'}}>
           <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search…" style={{padding:'9px 14px', border:'1px solid #DDE4ED', borderRadius:10, fontSize:13, minWidth:240, outline:'none', background:'#fff'}}/>
         </div>
       </div>
 
       {loading ? (
-        <div style={{padding:40, color:'#5B6A7D', fontSize:13, textAlign:'center'}}>Loading courses…</div>
+        <div style={{padding:40, color:'#5B6A7D', fontSize:13, textAlign:'center'}}>Loading assessments…</div>
       ) : enrolled.length === 0 ? (
-        <EmptyState icon="📚" title="No courses yet" sub="Your Compliance admin hasn't published any courses. Once they do, they'll appear here automatically."/>
+        <EmptyState icon="📝" title="No assessments yet" sub="Your admin hasn't assigned any assessments. Once they do, they'll appear here automatically."/>
       ) : filtered.length === 0 ? (
         <EmptyState icon="🔍" title="No matches" sub="Try a different filter or search term."/>
       ) : (

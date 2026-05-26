@@ -369,11 +369,9 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
     <div style={{padding:'24px 36px 48px', animation:'fadeUp .3s ease-out', display:'grid', gridTemplateColumns:'1fr 340px', gap:20}}>
       <div>
         <div style={{display:'flex', alignItems:'center', gap:8, marginBottom:14, fontSize:12, color:'#5B6A7D'}}>
-          <a onClick={()=>onNav('courses')} style={{cursor:'pointer'}}>My Courses</a>
+          <a onClick={()=>onNav('courses')} style={{cursor:'pointer'}}>My Assessments</a>
           <span>›</span>
-          <a style={{color:'#3B4A5E'}}>{course.title}</a>
-          <span>›</span>
-          <span style={{color:'#0A1F3D', fontWeight:600}}>{hasVideo ? `Video ${lessonIdx+1}` : `Lesson ${lessonIdx+1}`}</span>
+          <span style={{color:'#0A1F3D', fontWeight:600}}>{course.title}</span>
         </div>
 
         {/* Step indicator: Watch → Assessment → Done */}
@@ -425,28 +423,34 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
               <div style={{padding:'36px 40px 28px', background:'linear-gradient(135deg,#0A1F3D,#0072FF)', color:'#fff', textAlign:'center', position:'relative', overflow:'hidden'}}>
                 <div style={{position:'absolute', top:-40, right:-40, width:180, height:180, borderRadius:999, background:'rgba(255,255,255,.07)', pointerEvents:'none'}}/>
                 <div style={{width:64, height:64, borderRadius:18, background:'rgba(255,255,255,.15)', display:'grid', placeItems:'center', fontSize:26, margin:'0 auto'}}>📝</div>
-                <div style={{fontSize:11, fontWeight:700, color:'#9EC9F0', letterSpacing:'.12em', textTransform:'uppercase', marginTop:16}}>Quiz</div>
-                {/* Course title as the hero heading; lesson title only as a
-                    subtitle when it's a real, non-default name. */}
+                <div style={{fontSize:11, fontWeight:700, color:'#9EC9F0', letterSpacing:'.12em', textTransform:'uppercase', marginTop:16}}>Assessment</div>
                 <div style={{fontSize:22, fontWeight:800, color:'#fff', marginTop:6, letterSpacing:'-.02em', lineHeight:1.2}}>{course.title}</div>
-                {lesson.title && lesson.title !== 'Untitled Lesson' && (
-                  <div style={{fontSize:13, fontWeight:600, color:'#9EC9F0', marginTop:4}}>{lesson.title}</div>
-                )}
                 <div style={{fontSize:13, color:'#C8DDF4', marginTop:8, lineHeight:1.5}}>
                   {stepQuizDone
-                    ? 'You\'ve already passed this quiz.'
-                    : 'Answer all questions correctly to complete this course.'}
+                    ? 'You\'ve already passed this assessment.'
+                    : 'Every answer must be correct (100%) to pass.'}
                 </div>
               </div>
-              <div style={{padding:'22px 40px 28px', textAlign:'center', display:'flex', flexDirection:'column', gap:10, alignItems:'center'}}>
-                {/* Once passed, the quiz is complete — no retake offered. */}
-                {stepQuizDone ? (
-                  <div style={{padding:'8px 18px', background:'#E8F7EF', border:'1px solid #C5EBD7', borderRadius:10, fontSize:13, fontWeight:700, color:'#0F7C57', display:'inline-flex', alignItems:'center', gap:8}}>
-                    <span>✓</span> Quiz passed
-                  </div>
-                ) : (
-                  <Btn size="lg" onClick={goToQuiz}>Start Quiz →</Btn>
+              <div style={{padding:'24px 36px 28px', display:'flex', flexDirection:'column', gap:18}}>
+                {!stepQuizDone && (
+                  // Instructions (folded in from the old intro popup).
+                  <ul style={{margin:0, padding:0, listStyle:'none', display:'flex', flexDirection:'column', gap:9, fontSize:13, color:'#3B4A5E', textAlign:'left'}}>
+                    {['Answer every question — 100% correct is required to pass.',
+                      'Got some wrong? Re-attempt only those — you won’t restart the whole assessment.',
+                      'You can flag questions and move between them freely.'].map(s => (
+                      <li key={s} style={{display:'flex', gap:10}}><span style={{color:'#17A674', flexShrink:0}}>✓</span><span>{s}</span></li>
+                    ))}
+                  </ul>
                 )}
+                <div style={{textAlign:'center'}}>
+                  {stepQuizDone ? (
+                    <div style={{padding:'8px 18px', background:'#E8F7EF', border:'1px solid #C5EBD7', borderRadius:10, fontSize:13, fontWeight:700, color:'#0F7C57', display:'inline-flex', alignItems:'center', gap:8}}>
+                      <span>✓</span> Assessment passed
+                    </div>
+                  ) : (
+                    <Btn size="lg" onClick={goToQuiz}>Start Quiz →</Btn>
+                  )}
+                </div>
               </div>
             </Card>
           </div>
@@ -562,15 +566,8 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
             Dates intentionally live on the Dashboard course card, not here. */}
         <Card pad={0}>
           <div style={{padding:'16px 18px', borderBottom:'1px solid #EEF2F7'}}>
-            <div style={{fontSize:11, fontWeight:600, color:'#8A97A8', letterSpacing:'.06em', textTransform:'uppercase'}}>In this course</div>
+            <div style={{fontSize:11, fontWeight:600, color:'#8A97A8', letterSpacing:'.06em', textTransform:'uppercase'}}>In this assessment</div>
             <div style={{fontSize:14, fontWeight:700, color:'#0A1F3D', marginTop:4}}>{course.title}</div>
-            <div style={{marginTop:10}}><ProgressBar value={courseProgress} showLabel/></div>
-            {(() => {
-              const courseHasVideo = lessons.some(l => !!l.video_path || l.duration > 0);
-              const doneCount = lessons.filter(l=>progress[l.id]?.completed).length;
-              const noun = courseHasVideo ? (lessons.length === 1 ? 'video' : 'videos') : (lessons.length === 1 ? 'lesson' : 'lessons');
-              return <div style={{fontSize:11, color:'#5B6A7D', marginTop:6}}>{doneCount} of {lessons.length} {noun} complete</div>;
-            })()}
           </div>
           <div style={{maxHeight:360, overflowY:'auto'}}>
             {lessons.map((l,i) => {
@@ -587,14 +584,13 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
                     {done ? '✓' : locked ? '🔒' : i+1}
                   </div>
                   <div style={{flex:1, minWidth:0}}>
-                    <div style={{fontSize:13, fontWeight: active?700:600, color: active?'#0A1F3D':'#3B4A5E'}}>{l.title}</div>
-                    <div style={{fontSize:11, color:'#8A97A8', marginTop:2, display:'flex', gap:8, alignItems:'center'}}>
-                      {l.duration > 0
-                        ? <span>{fmt(l.duration)}</span>
-                        : <span style={{color:'#8A97A8', fontStyle:'italic'}}>Assessment only</span>}
-                      {bestPass > 0 && <span style={{color:'#17A674', fontWeight:600}}>· {l.duration > 0 ? '' : ''}Assessment {bestPass}%</span>}
-                    </div>
-                    {wpct>0 && wpct<100 && l.duration>0 && <div style={{marginTop:6}}><ProgressBar value={Math.round(wpct)} height={3}/></div>}
+                    <div style={{fontSize:13, fontWeight: active?700:600, color: active?'#0A1F3D':'#3B4A5E'}}>{l.title && l.title !== 'Untitled Lesson' ? l.title : course.title}</div>
+                    {(l.duration > 0 || bestPass > 0) && (
+                      <div style={{fontSize:11, color:'#8A97A8', marginTop:2, display:'flex', gap:8, alignItems:'center'}}>
+                        {l.duration > 0 && <span>{fmt(l.duration)}</span>}
+                        {bestPass > 0 && <span style={{color:'#17A674', fontWeight:600}}>Score {bestPass}%</span>}
+                      </div>
+                    )}
                   </div>
                 </div>
               );

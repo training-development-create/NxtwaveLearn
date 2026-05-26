@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { useMCQ, useCourseLessons, recordAttempt, saveLessonProgress } from "./queries";
 import { useAuth } from "./auth";
 import { supabase } from "@/integrations/supabase/client";
-import { Btn, Card, Chip, ProgressBar, EmptyState } from "./ui";
+import { Btn, Card, Chip, EmptyState } from "./ui";
 import type { Nav, AppState } from "./App";
 
 export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppState; setState: (s: AppState) => void }) {
@@ -98,11 +98,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
     return <div style={{padding:40}}><EmptyState icon="📝" title="No quiz for this lesson" sub="Your admin hasn't added questions for this lesson yet." action={<Btn onClick={()=>onNav('courses')}>Back to Home</Btn>}/></div>;
   }
 
-  // Real lesson title, or null when it's the blank "Untitled Lesson" default.
-  // Headings show the lesson name when meaningful, otherwise fall back to the
-  // course title so learners never see "Untitled Lesson".
-  const lessonName = lesson.title && lesson.title !== 'Untitled Lesson' ? lesson.title : null;
-  // No video anywhere in this course → never say "Video" in the assessment UI.
+  // Whether this assessment has any video — only used to route "Exit".
   const courseHasVideo = lessons.some(l => !!l.video_path || l.duration > 0);
 
   if (stage === 'result') {
@@ -259,8 +255,8 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
     <div style={{padding:'24px 40px 48px', maxWidth:1180, animation:'fadeUp .3s'}}>
       <div style={{display:'flex', alignItems:'center', gap:16, marginBottom:20}}>
         <div>
-          <div style={{fontSize:11, fontWeight:600, color:'#8A97A8', letterSpacing:'.06em', textTransform:'uppercase'}}>{retakeIndices !== null ? `Retake · ${retakeIndices.length} wrong question${retakeIndices.length === 1 ? '' : 's'}` : `Assessment${courseHasVideo ? ` · Video ${lessonIdx+1} of ${lessons.length}` : ''}`}</div>
-          <h2 style={{fontSize:22, color:'#0A1F3D', margin:'4px 0 0', letterSpacing:'-.02em', fontWeight:700}}>{lessonName || course.title}</h2>
+          <div style={{fontSize:11, fontWeight:600, color:'#8A97A8', letterSpacing:'.06em', textTransform:'uppercase'}}>{retakeIndices !== null ? `Retake · ${retakeIndices.length} wrong answer${retakeIndices.length === 1 ? '' : 's'}` : 'Assessment'}</div>
+          <h2 style={{fontSize:22, color:'#0A1F3D', margin:'4px 0 0', letterSpacing:'-.02em', fontWeight:700}}>{course.title}</h2>
         </div>
         <div style={{marginLeft:'auto', display:'flex', gap:10, alignItems:'center'}}>
           <Btn variant="ghost" size="sm" onClick={()=>onNav(courseHasVideo ? 'player' : 'courses')}>Exit</Btn>
@@ -270,10 +266,9 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
       <div style={{display:'grid', gridTemplateColumns:'1fr 280px', gap:20}}>
         <Card pad={0}>
           <div style={{padding:'18px 26px', borderBottom:'1px solid #EEF2F7', display:'flex', alignItems:'center', gap:14}}>
-            <div style={{fontSize:12, fontWeight:700, color:'#8A97A8', letterSpacing:'.06em', textTransform:'uppercase'}}>
+            <div style={{flex:1, fontSize:12, fontWeight:700, color:'#8A97A8', letterSpacing:'.06em', textTransform:'uppercase'}}>
               Question {idx+1} of {totalQs}
             </div>
-            <div style={{flex:1}}><ProgressBar value={((idx+1)/totalQs)*100} height={4}/></div>
             <button onClick={()=>{ const f = new Set(flagged); f.has(originalIdx) ? f.delete(originalIdx) : f.add(originalIdx); setFlagged(f); }} style={{padding:'5px 11px', background: flagged.has(originalIdx)?'#FEEFD3':'#F7F9FC', color: flagged.has(originalIdx)?'#B8660F':'#5B6A7D', border:0, borderRadius:8, fontSize:12, fontWeight:600, cursor:'pointer'}}>
               {flagged.has(originalIdx) ? 'Flagged' : 'Flag'}
             </button>
