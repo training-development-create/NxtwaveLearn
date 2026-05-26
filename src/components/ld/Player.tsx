@@ -19,7 +19,6 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
   const [course, setCourse] = useState<{ id: string; title: string; instructor: string; emoji: string; duration_label: string; published_at: string | null; due_in_days: number | null } | null>(null);
   const { lessons, progress, attemptsByLesson, loading, accessDenied, reload } = useCourseLessons(courseId, user?.id ?? null);
   const [videoSrc, setVideoSrc] = useState<string | null>(null);
-  const [showComplianceModal, setShowComplianceModal] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const frameRef = useRef<HTMLDivElement | null>(null);
 
@@ -45,23 +44,6 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
     return () => { cancelled = true; };
   }, [courseId]);
 
-  // One-time compliance notice per (user, course). Stored in localStorage so
-  // we don't nag returning learners. The wizard still appears the first time
-  // a user opens any new course they're enrolled in.
-  useEffect(() => {
-    if (!courseId || !user) return;
-    const key = `compliance-ack-${user.id}-${courseId}`;
-    if (typeof window !== 'undefined' && !window.localStorage.getItem(key)) {
-      setShowComplianceModal(true);
-    }
-  }, [courseId, user]);
-
-  const acknowledgeCompliance = () => {
-    if (user && courseId && typeof window !== 'undefined') {
-      window.localStorage.setItem(`compliance-ack-${user.id}-${courseId}`, '1');
-    }
-    setShowComplianceModal(false);
-  };
 
   const locks = lessons.map((_, idx) => {
     if (idx === 0) return false;
@@ -385,13 +367,6 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
 
   return (
     <div style={{padding:'24px 36px 48px', animation:'fadeUp .3s ease-out', display:'grid', gridTemplateColumns:'1fr 340px', gap:20}}>
-      {showComplianceModal && (
-        <ComplianceWizardModal
-          courseTitle={course.title}
-          hasVideo={hasVideo}
-          onAcknowledge={acknowledgeCompliance}
-        />
-      )}
       <div>
         <div style={{display:'flex', alignItems:'center', gap:8, marginBottom:14, fontSize:12, color:'#5B6A7D'}}>
           <a onClick={()=>onNav('courses')} style={{cursor:'pointer'}}>My Courses</a>
@@ -662,44 +637,6 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
 // =============================================================================
 // Compliance UI helpers
 // =============================================================================
-
-// Single-popup acknowledgement shown the first time a learner opens a course.
-// Lists the steps in one panel — Video, Assessment, and (optionally) Document.
-// Wording intentionally kept neutral (no "compliance" branding) so the same
-// flow works for any course type.
-function ComplianceWizardModal({ courseTitle, hasVideo, onAcknowledge }: { courseTitle: string; hasVideo: boolean; onAcknowledge: () => void }) {
-  // Build steps dynamically — only include the video step if a video was uploaded.
-  const steps: { tag: string; text: string }[] = [];
-  if (hasVideo) {
-    steps.push({ tag: 'Watch video', text: 'Watch the full training video. Skipping ahead and tab switching are disabled.' });
-  }
-  steps.push({ tag: 'Quiz', text: '100% correct answers required to pass. Any wrong answers are shown for re-attempt individually — you don\'t restart the whole quiz.' });
-
-  return (
-    <div style={{position:'fixed', inset:0, background:'rgba(10,31,61,.6)', zIndex:2000, display:'grid', placeItems:'center', padding:24}}>
-      <div style={{background:'#fff', borderRadius:14, maxWidth:560, width:'100%', overflow:'hidden', boxShadow:'0 20px 60px rgba(0,0,0,.3)'}}>
-        <div style={{padding:'24px 28px 20px', background:'linear-gradient(135deg,#0A1F3D,#0072FF)', color:'#fff'}}>
-          <div style={{fontSize:11, fontWeight:700, letterSpacing:'.12em', color:'#9EC9F0', textTransform:'uppercase'}}>Steps</div>
-          <div style={{fontSize:18, fontWeight:800, marginTop:6, letterSpacing:'-.01em'}}>Before you begin</div>
-          <div style={{fontSize:12, color:'#C8DDF4', marginTop:6}}>{courseTitle}</div>
-        </div>
-
-        <div style={{padding:'22px 28px 8px', display:'flex', flexDirection:'column', gap:16}}>
-          {steps.map((s) => (
-            <div key={s.tag}>
-              <div style={{fontSize:11, fontWeight:700, letterSpacing:'.08em', color:'#0072FF', textTransform:'uppercase', marginBottom:6}}>{s.tag}</div>
-              <div style={{fontSize:14, color:'#0A1F3D', lineHeight:1.55}}>{s.text}</div>
-            </div>
-          ))}
-        </div>
-
-        <div style={{padding:'18px 28px 22px', display:'flex', justifyContent:'flex-end'}}>
-          <Btn size="lg" onClick={onAcknowledge}>I Understand</Btn>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 function ComplianceStepIndicator({ hasVideo, videoDone, quizDone, completed }: { hasVideo: boolean; videoDone: boolean; quizDone: boolean; completed: boolean }) {
   const steps = [
