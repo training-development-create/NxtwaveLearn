@@ -366,7 +366,7 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
   const stepCompleted = stepVideoDone && stepQuizDone;
 
   return (
-    <div style={{padding:'24px 36px 48px', animation:'fadeUp .3s ease-out', display:'grid', gridTemplateColumns:'1fr 340px', gap:20}}>
+    <div style={{padding:'24px 36px 48px', animation:'fadeUp .3s ease-out', display:'grid', gridTemplateColumns: hasVideo ? '1fr 340px' : '1fr', gap:20}}>
       <div>
         <div style={{display:'flex', alignItems:'center', gap:8, marginBottom:14, fontSize:12, color:'#5B6A7D'}}>
           <a onClick={()=>onNav('courses')} style={{cursor:'pointer'}}>My Assessments</a>
@@ -415,10 +415,10 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
           );
         })()}
 
-        {/* No-video: show a large centered assessment CTA in the main content
-            area so it's front-and-centre, not tucked in the narrow right rail. */}
+        {/* No-video: the assessment CTA fills the page (single-column layout —
+            no right rail for quiz-only assessments). */}
         {!hasVideo && (
-          <div style={{marginTop:20, maxWidth:540, margin:'20px auto 0'}}>
+          <div style={{marginTop:20}}>
             <Card pad={0} style={{overflow:'hidden', border:'1.5px solid #CCEAFF', boxShadow:'0 4px 24px rgba(0,114,255,.08)'}}>
               <div style={{padding:'36px 40px 28px', background:'linear-gradient(135deg,#0A1F3D,#0072FF)', color:'#fff', textAlign:'center', position:'relative', overflow:'hidden'}}>
                 <div style={{position:'absolute', top:-40, right:-40, width:180, height:180, borderRadius:999, background:'rgba(255,255,255,.07)', pointerEvents:'none'}}/>
@@ -558,12 +558,10 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
 
       </div>
 
+      {/* Right rail — only for video courses. Quiz-only assessments use the
+          full-width card above (no lesson list / repeated names on the side). */}
+      {hasVideo && (
       <div style={{display:'flex', flexDirection:'column', gap:14}}>
-        {/* Right-rail order:
-              1. "In this course" — video list + duration on top
-              2. Step 2 — Assessment
-              3. Step 3 — Agreement (when required)
-            Dates intentionally live on the Dashboard course card, not here. */}
         <Card pad={0}>
           <div style={{padding:'16px 18px', borderBottom:'1px solid #EEF2F7'}}>
             <div style={{fontSize:11, fontWeight:600, color:'#8A97A8', letterSpacing:'.06em', textTransform:'uppercase'}}>In this assessment</div>
@@ -626,6 +624,7 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
           </Card>
         )}
       </div>
+      )}
     </div>
   );
 }

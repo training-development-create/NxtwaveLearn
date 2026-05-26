@@ -180,7 +180,9 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
             </div>
           </Card>
 
-          <div style={{display:'flex', flexDirection:'column', gap:14}}>
+          {/* Right column — content vertically centred so the action button
+              sits mid-page on the right side (not at the very top or bottom). */}
+          <div style={{display:'flex', flexDirection:'column', gap:16, justifyContent:'center'}}>
             <Card pad={22}>
               <div style={{fontSize:13, fontWeight:700, color:'#0A1F3D', marginBottom:8}}>What happens next</div>
               <div style={{fontSize:13, color:'#3B4A5E', lineHeight:1.6}}>
@@ -189,21 +191,17 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
                   : <>Re-attempt the {wrongIndices.length} wrong question{wrongIndices.length === 1 ? '' : 's'} to pass. Your correct answers are already saved — only the wrong ones will be shown.</>}
               </div>
             </Card>
+            {/* Prominent, interactive action (retake pulses). */}
+            {pass ? (
+              <button className="quiz-action-btn quiz-action-success" style={{width:'100%', justifyContent:'center'}} onClick={onNext}>
+                {nextLesson ? <>Start next lesson <span aria-hidden>→</span></> : <>Done <span aria-hidden>→</span></>}
+              </button>
+            ) : (
+              <button className="quiz-action-btn quiz-action-retry" style={{width:'100%', justifyContent:'center'}} onClick={onRetryWrong}>
+                <span aria-hidden style={{fontSize:16}}>↻</span> Re-attempt {wrongIndices.length} wrong answer{wrongIndices.length === 1 ? '' : 's'}
+              </button>
+            )}
           </div>
-        </div>
-
-        {/* Action bar BELOW the cards (after "What happens next") so it's
-            clearly visible to everyone. Prominent + interactive; retake pulses. */}
-        <div style={{display:'flex', justifyContent:'center', marginTop:24}}>
-          {pass ? (
-            <button className="quiz-action-btn quiz-action-success" onClick={onNext}>
-              {nextLesson ? <>Start next lesson <span aria-hidden>→</span></> : <>Done <span aria-hidden>→</span></>}
-            </button>
-          ) : (
-            <button className="quiz-action-btn quiz-action-retry" onClick={onRetryWrong}>
-              <span aria-hidden style={{fontSize:16}}>↻</span> Re-attempt {wrongIndices.length} wrong answer{wrongIndices.length === 1 ? '' : 's'}
-            </button>
-          )}
         </div>
       </div>
     );
