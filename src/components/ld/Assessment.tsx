@@ -126,19 +126,6 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
     const onNext = () => { if (nextLesson) { setState({ ...state, activeLesson: nextLesson.id }); onNav('player'); } else onNav('courses'); };
     return (
       <div style={{padding:'28px 40px 48px', maxWidth:1080, animation:'fadeUp .4s'}}>
-        {/* Top action bar — single prominent action on the RIGHT (retake on a
-            fail, next/done on a pass). Interactive hover lift; retake pulses. */}
-        <div style={{display:'flex', gap:12, marginBottom:20, alignItems:'center', justifyContent:'flex-end', flexWrap:'wrap'}}>
-          {pass ? (
-            <button className="quiz-action-btn quiz-action-success" onClick={onNext}>
-              {nextLesson ? <>Start next lesson <span aria-hidden>→</span></> : <>Done <span aria-hidden>→</span></>}
-            </button>
-          ) : (
-            <button className="quiz-action-btn quiz-action-retry" onClick={onRetryWrong}>
-              <span aria-hidden style={{fontSize:16}}>↻</span> Re-attempt {wrongIndices.length} wrong answer{wrongIndices.length === 1 ? '' : 's'}
-            </button>
-          )}
-        </div>
         <div style={{display:'grid', gridTemplateColumns:'1.2fr 1fr', gap:20}}>
           <Card pad={0} style={{overflow:'hidden'}}>
             <div style={{padding:'36px 40px', background: pass?'linear-gradient(135deg,#0F7C57,#17A674)':'#0A1F3D', color:'#fff'}}>
@@ -203,6 +190,20 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
               </div>
             </Card>
           </div>
+        </div>
+
+        {/* Action bar BELOW the cards (after "What happens next") so it's
+            clearly visible to everyone. Prominent + interactive; retake pulses. */}
+        <div style={{display:'flex', justifyContent:'center', marginTop:24}}>
+          {pass ? (
+            <button className="quiz-action-btn quiz-action-success" onClick={onNext}>
+              {nextLesson ? <>Start next lesson <span aria-hidden>→</span></> : <>Done <span aria-hidden>→</span></>}
+            </button>
+          ) : (
+            <button className="quiz-action-btn quiz-action-retry" onClick={onRetryWrong}>
+              <span aria-hidden style={{fontSize:16}}>↻</span> Re-attempt {wrongIndices.length} wrong answer{wrongIndices.length === 1 ? '' : 's'}
+            </button>
+          )}
         </div>
       </div>
     );
