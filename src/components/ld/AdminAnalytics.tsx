@@ -116,7 +116,7 @@ export function AdminAnalytics() {
   // Export state — MUST be declared before any early return so the hook
   // count stays stable across renders (otherwise React error #310 fires
   // the moment `courses.length` flips from 0 → N).
-  const [exporting, setExporting] = useState<null | 'csv' | 'zip'>(null);
+  const [exporting, setExporting] = useState<null | 'csv' | 'zip' | 'attempts'>(null);
   // Department / manager analytics state.
   const [profilesAll, setProfilesAll] = useState<ProfileMini[]>([]);
   const progArrRef = useRef<{ user_id: string; lesson_id: string; watched_seconds: number; completed: boolean }[]>([]);
@@ -708,6 +708,91 @@ export function AdminAnalytics() {
     }
   };
 
+  // ----- Per-ATTEMPT export -------------------------------------------------
+  // One row per attempt for the selected lesson, with a fixed column layout:
+  //   user info | Q1 Answer / Correct / Unclear / Not-Confident … per question
+  //            | Overall Rating / Feedback / Feedback Submitted
+  // Every attempt (first + retakes) is its own row, in chronological order.
+  const exportAttemptsSheet = async () => {
+    const lessonId = vid || courseLessons[0]?.id;
+    if (!course || !lessonId) { alert('Select a course and lesson first.'); return; }
+    setExporting('attempts');
+    try {
+      const courseTitle = courses.find(c => c.id === course)?.title || 'course';
+      // Questions define the column set (positional, Q1…Qn).
+      const { data: qRows } = await supabase.from('mcq_questions')
+        .select('id, options, position').eq('lesson_id', lessonId).order('position', { ascending: true });
+      const questions = ((qRows || []) as { id: string; options: unknown; position: number }[])
+        .map(q => ({ id: q.id, options: (q.options as string[]) || [] }));
+
+      // Attempts = rows (chronological).
+      const { data: aRows } = await supabase.from('quiz_attempts')
+        .select('id, user_id, attempt_number, score, total, passed, overall_rating, overall_feedback, feedback_submitted, submitted_at')
+        .eq('lesson_id', lessonId).order('submitted_at', { ascending: true }).range(0, 99999);
+      const attempts = (aRows || []) as { id: string; user_id: string; attempt_number: number | null; score: number; total: number; passed: boolean; overall_rating: number | null; overall_feedback: string | null; feedback_submitted: boolean; submitted_at: string | null }[];
+      if (!attempts.length) { alert('No attempts recorded for this assessment yet.'); setExporting(null); return; }
+
+      // Per-question responses, keyed attempt → position.
+      type Resp = { selected_answer: number | null; is_correct: boolean | null; unclear_question_flag: boolean; not_confident_flag: boolean };
+      const byAttempt = new Map<string, Map<number, Resp>>();
+      const attemptIds = attempts.map(a => a.id);
+      const CH = 200;
+      for (let i = 0; i < attemptIds.length; i += CH) {
+        const { data: resp } = await supabase.from('quiz_question_responses')
+          .select('attempt_id, position, selected_answer, is_correct, unclear_question_flag, not_confident_flag')
+          .in('attempt_id', attemptIds.slice(i, i + CH));
+        (resp || []).forEach((r: { attempt_id: string; position: number } & Resp) => {
+          if (!byAttempt.has(r.attempt_id)) byAttempt.set(r.attempt_id, new Map());
+          byAttempt.get(r.attempt_id)!.set(r.position, r);
+        });
+      }
+
+      // Employee info per user.
+      const userIds = Array.from(new Set(attempts.map(a => a.user_id)));
+      const empByUser = new Map<string, { name: string; employee_id: string | null; email: string; designation_name: string | null; dept: string | null; region: string | null }>();
+      for (let i = 0; i < userIds.length; i += 1000) {
+        const { data: emps } = await supabase.from('employees')
+          .select('auth_user_id, name, employee_id, email, designation_name, top_department, departments:department_id(name)')
+          .in('auth_user_id', userIds.slice(i, i + 1000));
+        (emps || []).forEach((e: { auth_user_id: string | null; name: string; employee_id: string | null; email: string; designation_name: string | null; top_department: string | null; departments: { name: string } | null }) => {
+          if (e.auth_user_id) empByUser.set(e.auth_user_id, { name: e.name, employee_id: e.employee_id, email: e.email, designation_name: e.designation_name, dept: e.departments?.name ?? null, region: e.top_department ?? null });
+        });
+      }
+
+      const header = ['Employee Name','Employee ID','Email','Department','Role','Region','Course Name','Completion Status','Attempt Number','Score','Percentage','Passed/Failed','Submitted Date'];
+      questions.forEach((_, i) => header.push(`Q${i+1} Answer`, `Q${i+1} Correct/Incorrect`, `Q${i+1} Unclear Flag`, `Q${i+1} Not Confident Flag`));
+      header.push('Overall Rating','Overall Feedback','Feedback Submitted');
+      const lines: string[] = [header.map(csvEscape).join(',')];
+
+      attempts.forEach(a => {
+        const e = empByUser.get(a.user_id);
+        const pct = a.total ? Math.round((a.score / a.total) * 100) : 0;
+        const respMap = byAttempt.get(a.id) || new Map<number, Resp>();
+        const row: unknown[] = [
+          e?.name || '', e?.employee_id || '', e?.email || '', e?.dept || '', e?.designation_name || '', e?.region || '',
+          courseTitle, a.passed ? 'Completed' : 'In progress', a.attempt_number ?? '', `${a.score}/${a.total}`, `${pct}%`, a.passed ? 'Passed' : 'Failed',
+          a.submitted_at ? new Date(a.submitted_at).toLocaleString() : '',
+        ];
+        questions.forEach((q, i) => {
+          const r = respMap.get(i);
+          const ai = r?.selected_answer;
+          const ans = (ai != null && q.options[ai] != null) ? String(q.options[ai]) : (ai != null ? String(ai) : '');
+          row.push(ans, r ? (r.is_correct ? 'Correct' : 'Incorrect') : '', r?.unclear_question_flag ? 'TRUE' : 'FALSE', r?.not_confident_flag ? 'TRUE' : 'FALSE');
+        });
+        row.push(a.overall_rating ?? '', a.overall_feedback ?? '', a.feedback_submitted ? 'Yes' : 'No');
+        lines.push(row.map(csvEscape).join(','));
+      });
+
+      const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+      triggerDownload(blob, `${safeFilenamePart(courseTitle)}-attempts-${new Date().toISOString().slice(0,10)}.csv`);
+    } catch (e) {
+      console.error('[AdminAnalytics] attempts export failed:', e);
+      alert('Could not export the attempts sheet. Please try again.');
+    } finally {
+      setExporting(null);
+    }
+  };
+
   return (
     <div style={{padding:'28px 36px 48px', animation:'fadeUp .3s'}}>
       {/* HRMS Sync banner */}
@@ -1094,6 +1179,14 @@ export function AdminAnalytics() {
               >
                 {exporting === 'zip' ? 'Bundling…' : '🗂 Sheet + signed PDFs (ZIP)'}
               </Btn>
+              <Btn
+                size="sm"
+                disabled={!course || exporting !== null}
+                onClick={exportAttemptsSheet}
+                title="Every attempt as its own row: per-question answers, correctness, unclear/not-confident flags, and feedback"
+              >
+                {exporting === 'attempts' ? 'Exporting…' : '📊 Export attempts (per question)'}
+              </Btn>
               <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search learner…" style={{padding:'8px 12px', border:'1px solid #DDE4ED', borderRadius:8, fontSize:12, minWidth:220}}/>
             </div>
           )}
@@ -1112,6 +1205,12 @@ export function AdminAnalytics() {
           <div style={{padding:24}}><EmptyState icon={courseHasVideo ? '🎬' : '📝'} title={courseHasVideo ? 'Select a video' : 'Select a lesson'} sub={courseHasVideo ? 'Choose a course and video to see watch progress and assessments.' : 'Choose a course and lesson to see assessment progress.'}/></div>
         )}
       </Card>
+
+      {selectedLesson && (
+        <div style={{marginTop:18}}>
+          <QuestionSignals lessonId={selectedLesson.id} />
+        </div>
+      )}
 
       {detailUser && <EmployeeDetailModal user={detailUser} onClose={()=>setDetailUser(null)} focusCourseId={course}/>}
     </div>
@@ -1446,6 +1545,189 @@ function StatusDonut({ data }: { data: { label: string; value: number; color: st
         })}
       </div>
     </div>
+  );
+}
+
+// Per-question signal analytics for the selected assessment. Surfaces:
+//   • Ambiguous questions  — high "unclear question" flag rate
+//   • Concept gaps         — high "not confident" rate and/or high incorrect rate
+// Signals are collected on the FIRST attempt only (see migration), so the
+// unclear / not-confident counts here are first-attempt voices; the incorrect
+// rate spans every recorded response so it reflects real performance.
+function QuestionSignals({ lessonId }: { lessonId: string }) {
+  type Row = {
+    id: string; position: number; question: string;
+    total: number; firstTotal: number;
+    unclear: number; notConfident: number; incorrect: number;
+  };
+  const [rows, setRows] = useState<Row[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      try {
+        const { data: qData } = await supabase.from('mcq_questions')
+          .select('id, question, position').eq('lesson_id', lessonId).order('position', { ascending: true });
+        const questions = ((qData || []) as { id: string; question: string; position: number }[]);
+        if (!questions.length) { if (!cancelled) { setRows([]); setLoading(false); } return; }
+        const qids = questions.map(q => q.id);
+
+        // Pull every response for these questions (paged). We also need to know
+        // which responses belong to a first attempt — fetch attempt flags once.
+        const responses: { question_id: string; attempt_id: string; is_correct: boolean | null; unclear_question_flag: boolean; not_confident_flag: boolean }[] = [];
+        const PAGE = 1000;
+        for (let from = 0; ; from += PAGE) {
+          const { data } = await supabase.from('quiz_question_responses')
+            .select('question_id, attempt_id, is_correct, unclear_question_flag, not_confident_flag')
+            .in('question_id', qids).range(from, from + PAGE - 1);
+          const batch = (data || []) as typeof responses;
+          responses.push(...batch);
+          if (batch.length < PAGE) break;
+        }
+
+        // First-attempt set (signals only meaningful for these).
+        const attemptIds = Array.from(new Set(responses.map(r => r.attempt_id)));
+        const firstAttempts = new Set<string>();
+        for (let i = 0; i < attemptIds.length; i += 200) {
+          const { data: aData } = await supabase.from('quiz_attempts')
+            .select('id, is_first_attempt').in('id', attemptIds.slice(i, i + 200));
+          (aData || []).forEach((a: { id: string; is_first_attempt: boolean }) => { if (a.is_first_attempt) firstAttempts.add(a.id); });
+        }
+
+        const agg = new Map<string, { total: number; firstTotal: number; unclear: number; notConfident: number; incorrect: number }>();
+        responses.forEach(r => {
+          const a = agg.get(r.question_id) || { total: 0, firstTotal: 0, unclear: 0, notConfident: 0, incorrect: 0 };
+          a.total += 1;
+          if (r.is_correct === false) a.incorrect += 1;
+          if (firstAttempts.has(r.attempt_id)) {
+            a.firstTotal += 1;
+            if (r.unclear_question_flag) a.unclear += 1;
+            if (r.not_confident_flag) a.notConfident += 1;
+          }
+          agg.set(r.question_id, a);
+        });
+
+        const out: Row[] = questions.map((q, i) => {
+          const a = agg.get(q.id) || { total: 0, firstTotal: 0, unclear: 0, notConfident: 0, incorrect: 0 };
+          return { id: q.id, position: q.position ?? i, question: q.question, ...a };
+        });
+        if (!cancelled) { setRows(out); setLoading(false); }
+      } catch (e) {
+        console.error('[QuestionSignals] load failed:', e);
+        if (!cancelled) { setRows([]); setLoading(false); }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [lessonId]);
+
+  const pct = (n: number, d: number) => (d ? Math.round((n / d) * 100) : 0);
+  // Concern score ranks the most problematic questions first.
+  const ranked = useMemo(() => {
+    return rows
+      .map((r, i) => ({
+        ...r, qno: i + 1,
+        unclearPct: pct(r.unclear, r.firstTotal),
+        notConfPct: pct(r.notConfident, r.firstTotal),
+        incorrectPct: pct(r.incorrect, r.total),
+      }))
+      .sort((a, b) =>
+        (b.unclearPct + b.notConfPct + b.incorrectPct) - (a.unclearPct + a.notConfPct + a.incorrectPct)
+        || a.qno - b.qno);
+  }, [rows]);
+
+  const ambiguous = ranked.filter(r => r.firstTotal >= 3 && r.unclearPct >= 25);
+  const conceptGaps = ranked.filter(r => r.total >= 3 && (r.incorrectPct >= 40 || r.notConfPct >= 30));
+
+  // Color a rate cell: muted under threshold, amber/red as it climbs.
+  const rateCell = (value: number, denom: number, thresholds: [number, number]) => {
+    if (!denom) return <span style={{color:'#B6C0CC'}}>—</span>;
+    const [amber, red] = thresholds;
+    const color = value >= red ? '#C2261D' : value >= amber ? '#B26A00' : '#3B4A5E';
+    const weight = value >= amber ? 800 : 600;
+    return <span style={{color, fontWeight:weight}}>{value}%</span>;
+  };
+
+  return (
+    <Card>
+      <div style={{padding:'18px 22px', borderBottom:'1px solid #EEF2F7'}}>
+        <div className="eyebrow">QUESTION SIGNALS · FIRST-ATTEMPT CLARITY &amp; CONFIDENCE</div>
+        <div style={{fontSize:16, fontWeight:800, color:'#002A4B', marginTop:2}}>Where learners struggle</div>
+        <div style={{fontSize:12, color:'#8A97A8', marginTop:4, lineHeight:1.5}}>
+          “Unclear” and “Not confident” are first-attempt signals. “Incorrect” spans every recorded response.
+        </div>
+      </div>
+
+      {loading ? (
+        <div style={{padding:'28px 22px', color:'#8A97A8', fontSize:13}}>Loading question analytics…</div>
+      ) : ranked.length === 0 ? (
+        <div style={{padding:24}}><EmptyState icon="📝" title="No questions" sub="This assessment has no questions to analyse yet."/></div>
+      ) : ranked.every(r => r.total === 0) ? (
+        <div style={{padding:24}}><EmptyState icon="📊" title="No responses yet" sub="Per-question signals appear once learners start submitting attempts."/></div>
+      ) : (
+        <>
+          {(ambiguous.length > 0 || conceptGaps.length > 0) && (
+            <div style={{display:'flex', gap:12, flexWrap:'wrap', padding:'14px 22px', borderBottom:'1px solid #EEF2F7'}}>
+              {ambiguous.length > 0 && (
+                <div style={{flex:1, minWidth:240, padding:'12px 14px', background:'#FFF7ED', border:'1px solid #FCE3C4', borderRadius:10}}>
+                  <div style={{fontSize:11, fontWeight:800, color:'#B26A00', letterSpacing:'.06em'}}>⚠ POSSIBLY AMBIGUOUS</div>
+                  <div style={{fontSize:12, color:'#7A4A00', marginTop:4, lineHeight:1.5}}>
+                    {ambiguous.map(r => `Q${r.qno}`).join(', ')} — flagged “unclear” by ≥25% of first-time learners. Consider rewording.
+                  </div>
+                </div>
+              )}
+              {conceptGaps.length > 0 && (
+                <div style={{flex:1, minWidth:240, padding:'12px 14px', background:'#FEF2F2', border:'1px solid #F7CFCB', borderRadius:10}}>
+                  <div style={{fontSize:11, fontWeight:800, color:'#C2261D', letterSpacing:'.06em'}}>🎯 LIKELY CONCEPT GAPS</div>
+                  <div style={{fontSize:12, color:'#8A211A', marginTop:4, lineHeight:1.5}}>
+                    {conceptGaps.map(r => `Q${r.qno}`).join(', ')} — high incorrect or low confidence. Worth reinforcing in training.
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          <div style={{overflowX:'auto'}}>
+            <table style={{width:'100%', borderCollapse:'collapse', fontSize:13}}>
+              <thead>
+                <tr style={{background:'#F7F9FC', textAlign:'left'}}>
+                  <th style={{padding:'10px 14px 10px 22px', fontSize:10, fontWeight:800, color:'#8A97A8', letterSpacing:'.07em', whiteSpace:'nowrap'}}>Q</th>
+                  <th style={{padding:'10px 14px', fontSize:10, fontWeight:800, color:'#8A97A8', letterSpacing:'.07em'}}>QUESTION</th>
+                  <th style={{padding:'10px 14px', fontSize:10, fontWeight:800, color:'#8A97A8', letterSpacing:'.07em', textAlign:'right', whiteSpace:'nowrap'}}>RESPONSES</th>
+                  <th style={{padding:'10px 14px', fontSize:10, fontWeight:800, color:'#8A97A8', letterSpacing:'.07em', textAlign:'right', whiteSpace:'nowrap'}}>UNCLEAR</th>
+                  <th style={{padding:'10px 14px', fontSize:10, fontWeight:800, color:'#8A97A8', letterSpacing:'.07em', textAlign:'right', whiteSpace:'nowrap'}}>NOT CONFIDENT</th>
+                  <th style={{padding:'10px 22px 10px 14px', fontSize:10, fontWeight:800, color:'#8A97A8', letterSpacing:'.07em', textAlign:'right', whiteSpace:'nowrap'}}>INCORRECT</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ranked.map(r => (
+                  <tr key={r.id} style={{borderTop:'1px solid #EEF2F7'}}>
+                    <td style={{padding:'10px 14px 10px 22px', fontWeight:800, color:'#002A4B', whiteSpace:'nowrap'}}>Q{r.qno}</td>
+                    <td style={{padding:'10px 14px', color:'#3B4A5E', maxWidth:420}}>
+                      <div style={{display:'-webkit-box', WebkitLineClamp:2, WebkitBoxOrient:'vertical', overflow:'hidden'}}>{r.question}</div>
+                    </td>
+                    <td style={{padding:'10px 14px', textAlign:'right', color:'#5B6A7D', whiteSpace:'nowrap'}}>{r.total}</td>
+                    <td style={{padding:'10px 14px', textAlign:'right', whiteSpace:'nowrap'}}>
+                      {rateCell(r.unclearPct, r.firstTotal, [25, 50])}
+                      {r.firstTotal > 0 && <span style={{color:'#B6C0CC', fontSize:11, marginLeft:4}}>({r.unclear})</span>}
+                    </td>
+                    <td style={{padding:'10px 14px', textAlign:'right', whiteSpace:'nowrap'}}>
+                      {rateCell(r.notConfPct, r.firstTotal, [30, 50])}
+                      {r.firstTotal > 0 && <span style={{color:'#B6C0CC', fontSize:11, marginLeft:4}}>({r.notConfident})</span>}
+                    </td>
+                    <td style={{padding:'10px 22px 10px 14px', textAlign:'right', whiteSpace:'nowrap'}}>
+                      {rateCell(r.incorrectPct, r.total, [40, 60])}
+                      {r.total > 0 && <span style={{color:'#B6C0CC', fontSize:11, marginLeft:4}}>({r.incorrect})</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </Card>
   );
 }
 

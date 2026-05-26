@@ -190,6 +190,7 @@ export type Database = {
           name: string
           status: "active" | "inactive" | "unassigned"
           sub_department_id: string | null
+          top_department: string | null
           updated_at: string
         }
         Insert: {
@@ -209,6 +210,7 @@ export type Database = {
           name?: string
           status?: "active" | "inactive" | "unassigned"
           sub_department_id?: string | null
+          top_department?: string | null
           updated_at?: string
         }
         Update: {
@@ -228,6 +230,7 @@ export type Database = {
           name?: string
           status?: "active" | "inactive" | "unassigned"
           sub_department_id?: string | null
+          top_department?: string | null
           updated_at?: string
         }
         Relationships: [
