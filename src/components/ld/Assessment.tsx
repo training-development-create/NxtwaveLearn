@@ -140,7 +140,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
               <div style={{display:'flex', gap:16, alignItems:'stretch'}}>
                 <div className="quiz-lift" style={{flex:1, padding:'18px 20px', background:'#F7F9FC', borderRadius:10, border:'1px solid #EEF2F7'}}>
                   <div style={{fontSize:11, fontWeight:700, color:'#8A97A8', letterSpacing:'.08em', textTransform:'uppercase'}}>Result</div>
-                  <div style={{fontSize:22, fontWeight:800, color: pass?'#17A674':'#C2261D', marginTop:6}}>{pass ? 'Passed ✓' : 'Failed ✕'}</div>
+                  <div style={{fontSize: pass ? 22 : 15, fontWeight:800, color: pass?'#17A674':'#D97706', marginTop:6}}>{pass ? 'Passed ✓' : 'Re-attempt required'}</div>
                 </div>
                 <div className="quiz-lift" style={{flex:1, padding:'18px 20px', background:'#F7F9FC', borderRadius:10, border:'1px solid #EEF2F7'}}>
                   <div style={{fontSize:11, fontWeight:700, color:'#8A97A8', letterSpacing:'.08em', textTransform:'uppercase'}}>Marks</div>
@@ -256,9 +256,13 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
               // Consent/acknowledgment statement — normal weight, each line on
               // its own row with spacing (the lead-in line is lightly emphasised).
               <div style={{display:'flex', flexDirection:'column', gap:12}}>
-                {q.q.split('\n').map(l => l.trim()).filter(Boolean).map((line, li) => (
-                  <div key={li} style={{fontSize:14, color:'#3B4A5E', lineHeight:1.65, fontWeight: li === 0 ? 600 : 400}}>{line}</div>
-                ))}
+                {q.q.split('\n').map(l => l.trim())
+                  // Drop the trailing "I have read and agree…" line — it's shown
+                  // once next to the checkbox below, so it shouldn't repeat here.
+                  .filter(l => l && !/i\s+have\s+read\s+and\s+agree/i.test(l))
+                  .map((line, li) => (
+                    <div key={li} style={{fontSize:14, color:'#3B4A5E', lineHeight:1.65, fontWeight: li === 0 ? 600 : 400}}>{line}</div>
+                  ))}
               </div>
             ) : (
               <h3 style={{fontSize:19, color:'#0A1F3D', letterSpacing:'-.01em', fontWeight:700, lineHeight:1.35, margin:0}}>{q.q}</h3>
