@@ -709,9 +709,11 @@ export function AdminAnalytics() {
   };
 
   // ----- Per-ATTEMPT export -------------------------------------------------
-  // One row per attempt for the selected lesson, with a fixed column layout:
-  //   user info | Q1 Answer / Correct / Unclear / Not-Confident … per question
-  //            | Overall Rating / Feedback / Feedback Submitted
+  // One row per attempt for the selected lesson. The leading identity columns
+  // match the leaderboard "Export sheet" exactly (Course / Employee / Dept /
+  // Sub-Dept / Manager …) — reusing `filtered`, so the active search +
+  // department/manager filters are honoured — then we append attempt-level
+  // columns, per-question Answer/Correct/Unclear/Not-Confident, and feedback.
   // Every attempt (first + retakes) is its own row, in chronological order.
   const exportAttemptsSheet = async () => {
     const lessonId = vid || courseLessons[0]?.id;
@@ -719,7 +721,12 @@ export function AdminAnalytics() {
     setExporting('attempts');
     try {
       const courseTitle = courses.find(c => c.id === course)?.title || 'course';
-      // Questions define the column set (positional, Q1…Qn).
+
+      // Identity block, keyed by auth user id — same source the leaderboard
+      // export uses, so the columns line up with the sheet admins already know.
+      const idByUser = new Map<string, LearnerRow>(filtered.map(r => [r.id, r]));
+
+      // Questions define the per-question column set (positional, Q1…Qn).
       const { data: qRows } = await supabase.from('mcq_questions')
         .select('id, options, position').eq('lesson_id', lessonId).order('position', { ascending: true });
       const questions = ((qRows || []) as { id: string; options: unknown; position: number }[])
@@ -727,10 +734,13 @@ export function AdminAnalytics() {
 
       // Attempts = rows (chronological).
       const { data: aRows } = await supabase.from('quiz_attempts')
-        .select('id, user_id, attempt_number, score, total, passed, overall_rating, overall_feedback, feedback_submitted, submitted_at')
-        .eq('lesson_id', lessonId).order('submitted_at', { ascending: true }).range(0, 99999);
-      const attempts = (aRows || []) as { id: string; user_id: string; attempt_number: number | null; score: number; total: number; passed: boolean; overall_rating: number | null; overall_feedback: string | null; feedback_submitted: boolean; submitted_at: string | null }[];
-      if (!attempts.length) { alert('No attempts recorded for this assessment yet.'); setExporting(null); return; }
+        .select('id, user_id, attempt_number, score, total, passed, overall_rating, overall_feedback, feedback_submitted, submitted_at, created_at')
+        .eq('lesson_id', lessonId).order('submitted_at', { ascending: true, nullsFirst: true }).range(0, 99999);
+      let attempts = (aRows || []) as { id: string; user_id: string; attempt_number: number | null; score: number; total: number; passed: boolean; overall_rating: number | null; overall_feedback: string | null; feedback_submitted: boolean; submitted_at: string | null; created_at: string | null }[];
+      // Keep only attempts by learners visible under the current filters, so
+      // this sheet matches the leaderboard's scope.
+      attempts = attempts.filter(a => idByUser.has(a.user_id));
+      if (!attempts.length) { alert('No attempts recorded for this assessment yet (under the current filters).'); setExporting(null); return; }
 
       // Per-question responses, keyed attempt → position.
       type Resp = { selected_answer: number | null; is_correct: boolean | null; unclear_question_flag: boolean; not_confident_flag: boolean };
@@ -747,31 +757,26 @@ export function AdminAnalytics() {
         });
       }
 
-      // Employee info per user.
-      const userIds = Array.from(new Set(attempts.map(a => a.user_id)));
-      const empByUser = new Map<string, { name: string; employee_id: string | null; email: string; designation_name: string | null; dept: string | null; region: string | null }>();
-      for (let i = 0; i < userIds.length; i += 1000) {
-        const { data: emps } = await supabase.from('employees')
-          .select('auth_user_id, name, employee_id, email, designation_name, top_department, departments:department_id(name)')
-          .in('auth_user_id', userIds.slice(i, i + 1000));
-        (emps || []).forEach((e: { auth_user_id: string | null; name: string; employee_id: string | null; email: string; designation_name: string | null; top_department: string | null; departments: { name: string } | null }) => {
-          if (e.auth_user_id) empByUser.set(e.auth_user_id, { name: e.name, employee_id: e.employee_id, email: e.email, designation_name: e.designation_name, dept: e.departments?.name ?? null, region: e.top_department ?? null });
-        });
-      }
-
-      const header = ['Employee Name','Employee ID','Email','Department','Role','Region','Course Name','Completion Status','Attempt Number','Score','Percentage','Passed/Failed','Submitted Date'];
+      const header = [
+        'Course','Employee Name','Employee Email','Employee ID','Department','Sub-Department',
+        'Manager Name','Manager Email','Manager Contact',
+        'Attempt Number','Score','Percentage','Result','Submitted Date',
+      ];
       questions.forEach((_, i) => header.push(`Q${i+1} Answer`, `Q${i+1} Correct/Incorrect`, `Q${i+1} Unclear Flag`, `Q${i+1} Not Confident Flag`));
       header.push('Overall Rating','Overall Feedback','Feedback Submitted');
       const lines: string[] = [header.map(csvEscape).join(',')];
 
       attempts.forEach(a => {
-        const e = empByUser.get(a.user_id);
+        const e = idByUser.get(a.user_id);
         const pct = a.total ? Math.round((a.score / a.total) * 100) : 0;
         const respMap = byAttempt.get(a.id) || new Map<number, Resp>();
+        const when = a.submitted_at || a.created_at;
         const row: unknown[] = [
-          e?.name || '', e?.employee_id || '', e?.email || '', e?.dept || '', e?.designation_name || '', e?.region || '',
-          courseTitle, a.passed ? 'Completed' : 'In progress', a.attempt_number ?? '', `${a.score}/${a.total}`, `${pct}%`, a.passed ? 'Passed' : 'Failed',
-          a.submitted_at ? new Date(a.submitted_at).toLocaleString() : '',
+          courseTitle,
+          e?.name || '', e?.email || '', e?.empId || '', e?.department || '', e?.subDepartment || '',
+          e?.managerName || '', e?.managerEmail || '', e?.managerContact || '',
+          a.attempt_number ?? '', `${a.score}/${a.total}`, `${pct}%`, a.passed ? 'Passed' : 'Failed',
+          when ? new Date(when).toLocaleString() : '',
         ];
         questions.forEach((q, i) => {
           const r = respMap.get(i);
