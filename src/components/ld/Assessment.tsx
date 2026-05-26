@@ -130,24 +130,18 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
     const onNext = () => { if (nextLesson) { setState({ ...state, activeLesson: nextLesson.id }); onNav('player'); } else onNav('courses'); };
     return (
       <div style={{padding:'28px 40px 48px', maxWidth:1080, animation:'fadeUp .4s'}}>
-        {/* Top action bar — Back to Home on the left, the primary action
-            (retake / next) pushed to the RIGHT so it's prominent + obvious.
-            Both are interactive (hover lift); the retake gently pulses. */}
-        <div style={{display:'flex', gap:12, marginBottom:20, alignItems:'center', flexWrap:'wrap'}}>
-          <button className="quiz-action-btn quiz-action-home" onClick={()=>onNav('courses')}>
-            <span aria-hidden>🏠</span> Back to Home
-          </button>
-          <div style={{marginLeft:'auto'}}>
-            {pass ? (
-              <button className="quiz-action-btn quiz-action-success" onClick={onNext}>
-                {nextLesson ? <>Start next lesson <span aria-hidden>→</span></> : <>Done <span aria-hidden>→</span></>}
-              </button>
-            ) : (
-              <button className="quiz-action-btn quiz-action-retry" onClick={onRetryWrong}>
-                <span aria-hidden style={{fontSize:16}}>↻</span> Re-attempt {wrongIndices.length} wrong answer{wrongIndices.length === 1 ? '' : 's'}
-              </button>
-            )}
-          </div>
+        {/* Top action bar — single prominent action on the RIGHT (retake on a
+            fail, next/done on a pass). Interactive hover lift; retake pulses. */}
+        <div style={{display:'flex', gap:12, marginBottom:20, alignItems:'center', justifyContent:'flex-end', flexWrap:'wrap'}}>
+          {pass ? (
+            <button className="quiz-action-btn quiz-action-success" onClick={onNext}>
+              {nextLesson ? <>Start next lesson <span aria-hidden>→</span></> : <>Done <span aria-hidden>→</span></>}
+            </button>
+          ) : (
+            <button className="quiz-action-btn quiz-action-retry" onClick={onRetryWrong}>
+              <span aria-hidden style={{fontSize:16}}>↻</span> Re-attempt {wrongIndices.length} wrong answer{wrongIndices.length === 1 ? '' : 's'}
+            </button>
+          )}
         </div>
         <div style={{display:'grid', gridTemplateColumns:'1.2fr 1fr', gap:20}}>
           <Card pad={0} style={{overflow:'hidden'}}>
