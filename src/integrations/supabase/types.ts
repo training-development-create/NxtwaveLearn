@@ -498,31 +498,52 @@ export type Database = {
       quiz_attempts: {
         Row: {
           answers: Json
+          attempt_number: number | null
           created_at: string
+          feedback_submitted: boolean
           id: string
+          is_first_attempt: boolean
           lesson_id: string
+          overall_feedback: string | null
+          overall_rating: number | null
           passed: boolean
           score: number
+          started_at: string | null
+          submitted_at: string | null
           total: number
           user_id: string
         }
         Insert: {
           answers?: Json
+          attempt_number?: number | null
           created_at?: string
+          feedback_submitted?: boolean
           id?: string
+          is_first_attempt?: boolean
           lesson_id: string
+          overall_feedback?: string | null
+          overall_rating?: number | null
           passed: boolean
           score: number
+          started_at?: string | null
+          submitted_at?: string | null
           total: number
           user_id: string
         }
         Update: {
           answers?: Json
+          attempt_number?: number | null
           created_at?: string
+          feedback_submitted?: boolean
           id?: string
+          is_first_attempt?: boolean
           lesson_id?: string
+          overall_feedback?: string | null
+          overall_rating?: number | null
           passed?: boolean
           score?: number
+          started_at?: string | null
+          submitted_at?: string | null
           total?: number
           user_id?: string
         }
@@ -532,6 +553,63 @@ export type Database = {
             columns: ["lesson_id"]
             isOneToOne: false
             referencedRelation: "lessons"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      quiz_question_responses: {
+        Row: {
+          answered_at: string
+          attempt_id: string
+          correct_answer: number | null
+          id: string
+          is_correct: boolean | null
+          not_confident_flag: boolean
+          position: number
+          question_id: string
+          selected_answer: number | null
+          unclear_question_flag: boolean
+          user_id: string
+        }
+        Insert: {
+          answered_at?: string
+          attempt_id: string
+          correct_answer?: number | null
+          id?: string
+          is_correct?: boolean | null
+          not_confident_flag?: boolean
+          position?: number
+          question_id: string
+          selected_answer?: number | null
+          unclear_question_flag?: boolean
+          user_id: string
+        }
+        Update: {
+          answered_at?: string
+          attempt_id?: string
+          correct_answer?: number | null
+          id?: string
+          is_correct?: boolean | null
+          not_confident_flag?: boolean
+          position?: number
+          question_id?: string
+          selected_answer?: number | null
+          unclear_question_flag?: boolean
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "quiz_question_responses_attempt_id_fkey"
+            columns: ["attempt_id"]
+            isOneToOne: false
+            referencedRelation: "quiz_attempts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "quiz_question_responses_question_id_fkey"
+            columns: ["question_id"]
+            isOneToOne: false
+            referencedRelation: "mcq_questions"
             referencedColumns: ["id"]
           },
         ]

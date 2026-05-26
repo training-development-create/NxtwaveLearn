@@ -349,8 +349,75 @@ export async function saveLessonProgress(userId: string, lessonId: string, watch
   return p;
 }
 
-export async function recordAttempt(userId: string, lessonId: string, answers: number[], score: number, total: number, passed: boolean) {
-  await supabase.from('quiz_attempts').insert({ user_id: userId, lesson_id: lessonId, score, total, passed, answers });
+export type QuestionSignal = { unclear: boolean; notConfident: boolean };
+export type AttemptFeedback = { rating: number | null; text: string | null; submitted: boolean };
+
+// Records ONE quiz attempt (history is never overwritten — each call inserts a
+// new quiz_attempts row) plus a per-question response row for every question.
+// First-attempt-only data (signals + feedback) is passed through; for retakes
+// the caller sets isFirstAttempt=false and those columns stay null/false.
+export async function recordAttempt(
+  userId: string,
+  lessonId: string,
+  opts: {
+    questions: { id: string; correct: number }[];   // positional, full set
+    answers: (number | null)[];
+    score: number;
+    total: number;
+    passed: boolean;
+    isFirstAttempt: boolean;
+    startedAt?: string | null;
+    signals?: Record<number, QuestionSignal>;        // keyed by question position
+    feedback?: AttemptFeedback;                        // first attempt only
+  },
+): Promise<void> {
+  // attempt_number = (# existing attempts for this user+lesson) + 1.
+  const { count } = await supabase.from('quiz_attempts')
+    .select('id', { count: 'exact', head: true })
+    .eq('user_id', userId).eq('lesson_id', lessonId);
+  const attemptNumber = (count ?? 0) + 1;
+  const fb = opts.isFirstAttempt ? opts.feedback : undefined;
+
+  const { data: inserted, error } = await supabase.from('quiz_attempts').insert({
+    user_id: userId,
+    lesson_id: lessonId,
+    score: opts.score,
+    total: opts.total,
+    passed: opts.passed,
+    answers: opts.answers as unknown as number[],
+    attempt_number: attemptNumber,
+    is_first_attempt: opts.isFirstAttempt,
+    started_at: opts.startedAt ?? null,
+    submitted_at: new Date().toISOString(),
+    overall_rating: fb?.rating ?? null,
+    overall_feedback: fb?.text ?? null,
+    feedback_submitted: !!fb?.submitted,
+  }).select('id').single();
+
+  if (error || !inserted) {
+    // Backward-compat: if the new columns aren't applied yet, still record the
+    // attempt with the original minimal shape so grading/history never break.
+    console.warn('[recordAttempt] extended insert failed — recording minimal attempt:', error?.message);
+    await supabase.from('quiz_attempts').insert({ user_id: userId, lesson_id: lessonId, score: opts.score, total: opts.total, passed: opts.passed, answers: opts.answers as unknown as number[] });
+    return;
+  }
+
+  // Per-question responses (one row per question, every attempt).
+  const rows = opts.questions.map((q, i) => ({
+    attempt_id: inserted.id as string,
+    user_id: userId,
+    question_id: q.id,
+    position: i,
+    selected_answer: opts.answers[i] ?? null,
+    correct_answer: q.correct,
+    is_correct: opts.answers[i] === q.correct,
+    unclear_question_flag: !!opts.signals?.[i]?.unclear,
+    not_confident_flag: !!opts.signals?.[i]?.notConfident,
+  }));
+  if (rows.length) {
+    const { error: rErr } = await supabase.from('quiz_question_responses').insert(rows);
+    if (rErr) console.warn('[recordAttempt] question responses insert failed (non-fatal):', rErr.message);
+  }
 }
 
 // Memoise signed URLs per page lifetime — switching back to a previous lesson

@@ -15,9 +15,9 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
   const nextLesson = lessons[lessonIdx + 1];
   const { questions, loading } = useMCQ(activeLessonId);
 
-  // No separate intro/start card — the quiz begins immediately (the Player's
-  // start card is the single entry point). Only 'quiz' and 'result' remain.
-  const [stage, setStage] = useState<'quiz'|'result'>('quiz');
+  // 'feedback' stage = first-attempt-only page shown after the last question,
+  // before the final submit. Retakes go straight quiz → result.
+  const [stage, setStage] = useState<'quiz'|'feedback'|'result'>('quiz');
   const [idx, setIdx] = useState(0);
   const [answers, setAnswers] = useState<(number|null)[]>([]);
   const [flagged, setFlagged] = useState<Set<number>>(new Set());
@@ -26,6 +26,17 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
   // indices are shown. Correct answers from the previous attempt are kept
   // intact in `answers` so scoring still uses the full array.
   const [retakeIndices, setRetakeIndices] = useState<number[] | null>(null);
+
+  // --- First-attempt signal collection (clarity/confidence) + feedback ---
+  // priorAttemptCount: how many attempts already exist for this user+lesson.
+  // The genuine first attempt = no prior attempts AND not in a retake.
+  const [priorAttemptCount, setPriorAttemptCount] = useState<number | null>(null);
+  // Per-question signals, keyed by the question's position in the full set.
+  const [signals, setSignals] = useState<Record<number, { unclear: boolean; notConfident: boolean }>>({});
+  const [fbRating, setFbRating] = useState(0);   // 0 = unrated
+  const [fbText, setFbText] = useState('');
+  const startedAtRef = useRef<string>(new Date().toISOString());
+  const isFirstAttempt = priorAttemptCount === 0 && retakeIndices === null;
 
   // Persistence — quiz state survives tab refresh / tab switch.
   // Key per (user, lesson). Cleared on submit so a retake starts fresh.
@@ -36,12 +47,13 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
     try {
       const raw = localStorage.getItem(persistKey);
       if (raw) {
-        const saved = JSON.parse(raw) as { stage?: string; idx?: number; answers?: (number|null)[]; flagged?: number[]; retakeIndices?: number[] | null };
-        if (saved.stage === 'quiz' || saved.stage === 'result') setStage(saved.stage);
+        const saved = JSON.parse(raw) as { stage?: string; idx?: number; answers?: (number|null)[]; flagged?: number[]; retakeIndices?: number[] | null; signals?: Record<number, { unclear: boolean; notConfident: boolean }> };
+        if (saved.stage === 'quiz' || saved.stage === 'result' || saved.stage === 'feedback') setStage(saved.stage);
         if (typeof saved.idx === 'number') setIdx(saved.idx);
         if (Array.isArray(saved.answers)) setAnswers(saved.answers);
         if (Array.isArray(saved.flagged)) setFlagged(new Set(saved.flagged));
         if ('retakeIndices' in saved) setRetakeIndices(saved.retakeIndices ?? null);
+        if (saved.signals && typeof saved.signals === 'object') setSignals(saved.signals);
       }
     } catch { /* ignore corrupt state */ }
     // CRITICAL: must always flip the gate so the save effect starts firing
@@ -57,11 +69,11 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
     if (!persistKey || !restoredRef.current) return;
     const t = setTimeout(() => {
       try {
-        localStorage.setItem(persistKey, JSON.stringify({ stage, idx, answers, flagged: Array.from(flagged), retakeIndices }));
+        localStorage.setItem(persistKey, JSON.stringify({ stage, idx, answers, flagged: Array.from(flagged), retakeIndices, signals }));
       } catch { /* quota or serialisation failure — ignore */ }
     }, 200);
     return () => clearTimeout(t);
-  }, [persistKey, stage, idx, answers, flagged, retakeIndices]);
+  }, [persistKey, stage, idx, answers, flagged, retakeIndices, signals]);
 
   // The active question list. In retake mode only the wrong questions are
   // shown; in a fresh attempt every question is included. We defensively clamp
@@ -87,6 +99,15 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
     if (!state.course) return;
     supabase.from('courses').select('id, title').eq('id', state.course).maybeSingle().then(({ data }) => setCourse(data as typeof course));
   }, [state.course]);
+
+  // Count prior attempts for this lesson — the clarity/confidence signals and
+  // the feedback page are shown ONLY on the genuine first attempt.
+  useEffect(() => {
+    if (!user || !activeLessonId) { setPriorAttemptCount(null); return; }
+    supabase.from('quiz_attempts').select('id', { count: 'exact', head: true })
+      .eq('user_id', user.id).eq('lesson_id', activeLessonId)
+      .then(({ count }) => setPriorAttemptCount(count ?? 0));
+  }, [user, activeLessonId]);
 
   if (!state.course || !state.activeLesson) {
     return <div style={{padding:40}}><EmptyState icon="🧭" title="No assessment selected" sub="Pick a video first." action={<Btn onClick={()=>onNav('courses')}>Back to Home</Btn>}/></div>;
@@ -199,14 +220,26 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
   const allActiveAnswered = activeList.every(({ originalIdx: oi }) => answers[oi] !== null && answers[oi] !== undefined);
   const totalQs = activeList.length;
 
-  const submit = async () => {
+  const submit = async (feedback?: { rating: number | null; text: string | null; submitted: boolean }) => {
     if (!user || !lesson) return;
     setSubmitting(true);
     const correct = answers.filter((a, i) => a === questions[i].correct).length;
     const pct = Math.round((correct / questions.length) * 100);
     // 100% required.
     const pass = pct === 100;
-    await recordAttempt(user.id, lesson.id, answers as number[], correct, questions.length, pass);
+    // Records the attempt + per-question responses. Signals + feedback are
+    // passed only on the first attempt (recordAttempt ignores them otherwise).
+    await recordAttempt(user.id, lesson.id, {
+      questions: questions.map(q => ({ id: q.id, correct: q.correct })),
+      answers,
+      score: correct,
+      total: questions.length,
+      passed: pass,
+      isFirstAttempt,
+      startedAt: startedAtRef.current,
+      signals: isFirstAttempt ? signals : undefined,
+      feedback: isFirstAttempt ? feedback : undefined,
+    });
     if (pass) {
       // Passing the quiz completes the lesson at the COMPONENT level (video was
       // already watched to unlock the quiz; this passing attempt satisfies the
@@ -229,6 +262,42 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
     }
   };
 
+  // First-attempt-only feedback page — shown after the last question, before
+  // the final submit. Both fields optional; collected exactly once.
+  if (stage === 'feedback') {
+    return (
+      <div style={{padding:'28px 40px 48px', maxWidth:640, margin:'0 auto', animation:'fadeUp .3s'}}>
+        <Card pad={0} style={{overflow:'hidden'}}>
+          <div style={{padding:'24px 30px', background:'linear-gradient(135deg,#0A1F3D,#0072FF)', color:'#fff'}}>
+            <div style={{fontSize:11, fontWeight:700, letterSpacing:'.12em', color:'#9EC9F0', textTransform:'uppercase'}}>One quick step</div>
+            <div style={{fontSize:20, fontWeight:800, marginTop:4}}>How was this assessment?</div>
+            <div style={{fontSize:12.5, color:'#C8DDF4', marginTop:6, lineHeight:1.5}}>Optional — your feedback helps us improve the training. We only ask once.</div>
+          </div>
+          <div style={{padding:'24px 30px 26px', display:'flex', flexDirection:'column', gap:22}}>
+            <div>
+              <div style={{fontSize:13, fontWeight:700, color:'#0A1F3D', marginBottom:10}}>Overall rating</div>
+              <div style={{display:'flex', gap:8}}>
+                {[1,2,3,4,5].map(n => (
+                  <button key={n} onClick={()=>setFbRating(n === fbRating ? 0 : n)} title={`${n} star${n===1?'':'s'}`}
+                    style={{width:44, height:44, borderRadius:10, border:`1.5px solid ${n<=fbRating?'#E08A1E':'#EEF2F7'}`, background: n<=fbRating?'#FFF8EA':'#fff', fontSize:20, lineHeight:1, cursor:'pointer', color: n<=fbRating?'#E08A1E':'#CBD5E1', transition:'all .12s'}}>★</button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <div style={{fontSize:13, fontWeight:700, color:'#0A1F3D', marginBottom:10}}>Suggestions / improvements</div>
+              <textarea value={fbText} onChange={e=>setFbText(e.target.value)} rows={4} placeholder="Anything unclear, or ideas to improve? (optional)"
+                style={{width:'100%', padding:'12px 14px', border:'1px solid #DDE4ED', borderRadius:10, fontSize:14, fontFamily:'inherit', resize:'vertical', outline:'none', boxSizing:'border-box'}}/>
+            </div>
+            <div style={{display:'flex', gap:10, justifyContent:'flex-end', flexWrap:'wrap'}}>
+              <Btn variant="ghost" size="lg" disabled={submitting} onClick={()=>submit({ rating: null, text: null, submitted: false })}>{submitting?'Submitting…':'Skip & Submit'}</Btn>
+              <Btn variant="success" size="lg" disabled={submitting} onClick={()=>submit({ rating: fbRating||null, text: fbText.trim()||null, submitted: true })}>{submitting?'Submitting…':'Submit with feedback'}</Btn>
+            </div>
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div style={{padding:'24px 40px 48px', maxWidth:1180, animation:'fadeUp .3s'}}>
       <div style={{display:'flex', alignItems:'center', gap:16, marginBottom:20}}>
@@ -240,6 +309,13 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
           <Btn variant="ghost" size="sm" onClick={()=>onNav(courseHasVideo ? 'player' : 'courses')}>Exit</Btn>
         </div>
       </div>
+
+      {/* First-attempt only: explain the clarity/confidence signals. */}
+      {isFirstAttempt && (
+        <div style={{marginBottom:20, padding:'14px 18px', background:'#F2F9FF', border:'1px solid #CCEAFF', borderRadius:12, fontSize:13, color:'#0A1F3D', lineHeight:1.55}}>
+          If a question isn't clear, tick <b>"This question wasn't clear to me."</b> If you don't know the concept, tick <b>"I'm not confident about this concept"</b> instead of guessing — this helps us identify where to strengthen training. These don't affect your score.
+        </div>
+      )}
 
       <div style={{display:'grid', gridTemplateColumns:'1fr 280px', gap:20}}>
         <Card pad={0}>
@@ -294,13 +370,36 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
                 })
               )}
             </div>
+            {/* First-attempt-only signals — informational, never affect scoring.
+                Hidden for the consent question (single option). */}
+            {isFirstAttempt && q.options.length > 1 && (() => {
+              const sig = signals[originalIdx] || { unclear: false, notConfident: false };
+              const toggle = (key: 'unclear' | 'notConfident') =>
+                setSignals(prev => ({ ...prev, [originalIdx]: { ...sig, [key]: !sig[key] } }));
+              const Box = ({ checked, label, onClick }: { checked: boolean; label: string; onClick: () => void }) => (
+                <button onClick={onClick} style={{display:'flex', gap:9, alignItems:'center', padding:'8px 12px', background: checked?'#FFF8EA':'#F7F9FC', border:`1px solid ${checked?'#FCD79B':'#EEF2F7'}`, borderRadius:8, cursor:'pointer', fontSize:12.5, color: checked?'#9A6708':'#5B6A7D', fontWeight:600}}>
+                  <span style={{width:16, height:16, borderRadius:4, border:`2px solid ${checked?'#E08A1E':'#CBD5E1'}`, background: checked?'#E08A1E':'#fff', color:'#fff', display:'grid', placeItems:'center', fontSize:11, flexShrink:0}}>{checked ? '✓' : ''}</span>
+                  {label}
+                </button>
+              );
+              return (
+                <div style={{display:'flex', gap:10, marginTop:16, flexWrap:'wrap'}}>
+                  <Box checked={sig.unclear} label="This question wasn't clear to me" onClick={() => toggle('unclear')} />
+                  <Box checked={sig.notConfident} label="I'm not confident about this concept" onClick={() => toggle('notConfident')} />
+                </div>
+              );
+            })()}
           </div>
           <div style={{padding:'14px 26px', borderTop:'1px solid #EEF2F7', display:'flex', alignItems:'center'}}>
             <Btn variant="ghost" disabled={idx===0} onClick={()=>setIdx(i=>i-1)}>← Previous</Btn>
             <div style={{marginLeft:'auto'}}>
               {idx<totalQs-1
                 ? <Btn onClick={()=>setIdx(i=>i+1)} disabled={selected===null || selected === undefined}>Next →</Btn>
-                : <Btn variant="success" onClick={submit} disabled={!allActiveAnswered || submitting}>{submitting?'Submitting…':'Submit'}</Btn>}
+                : isFirstAttempt
+                  // First attempt → go to the one-time feedback page before submitting.
+                  ? <Btn variant="success" onClick={()=>setStage('feedback')} disabled={!allActiveAnswered || submitting}>Continue →</Btn>
+                  // Retake → submit directly (no feedback page).
+                  : <Btn variant="success" onClick={()=>submit()} disabled={!allActiveAnswered || submitting}>{submitting?'Submitting…':'Submit'}</Btn>}
             </div>
           </div>
         </Card>
