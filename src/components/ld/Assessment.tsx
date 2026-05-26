@@ -154,29 +154,8 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
               <div style={{marginTop:18, fontSize:12, color:'#5B6A7D'}}>
                 {pass
                   ? 'Great work — your completion is recorded.'
-                  : `You answered ${wrongIndices.length} question${wrongIndices.length === 1 ? '' : 's'} incorrectly. Review them below, then re-attempt just those questions — every question must be correct to pass.`}
+                  : `You answered ${wrongIndices.length} question${wrongIndices.length === 1 ? '' : 's'} incorrectly. Re-attempt just those — every question must be correct to pass.`}
               </div>
-              {!pass && wrongIndices.length > 0 && (
-                <div style={{marginTop:22, padding:'18px 20px', background:'#FFF7F6', border:'1px solid #FCE1DE', borderRadius:10}}>
-                  <div style={{fontSize:11, fontWeight:700, color:'#C2261D', letterSpacing:'.08em', textTransform:'uppercase', marginBottom:10}}>
-                    To re-attempt · {wrongIndices.length} incorrect answer{wrongIndices.length === 1 ? '' : 's'}
-                  </div>
-                  <div style={{display:'flex', flexDirection:'column', gap:10}}>
-                    {wrongIndices.map(i => {
-                      const q = questions[i];
-                      // List only the question text. We intentionally do NOT
-                      // show the learner's answer, the correct answer, or any
-                      // right/wrong indicator beyond the question being in
-                      // this list — so retake attempts remain a real test.
-                      return (
-                        <div key={q.id} style={{padding:'12px 14px', background:'#fff', border:'1px solid #FCE1DE', borderRadius:8, fontSize:13, fontWeight:600, color:'#0A1F3D'}}>
-                          Q{i+1}. {q.q}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
             </div>
           </Card>
 

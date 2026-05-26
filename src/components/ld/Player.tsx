@@ -418,27 +418,27 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
         {/* No-video: the assessment CTA fills the page (single-column layout —
             no right rail for quiz-only assessments). */}
         {!hasVideo && (
-          <div style={{marginTop:20}}>
-            <Card pad={0} style={{overflow:'hidden', border:'1.5px solid #CCEAFF', boxShadow:'0 4px 24px rgba(0,114,255,.08)'}}>
-              <div style={{padding:'36px 40px 28px', background:'linear-gradient(135deg,#0A1F3D,#0072FF)', color:'#fff', textAlign:'center', position:'relative', overflow:'hidden'}}>
-                <div style={{position:'absolute', top:-40, right:-40, width:180, height:180, borderRadius:999, background:'rgba(255,255,255,.07)', pointerEvents:'none'}}/>
-                <div style={{width:64, height:64, borderRadius:18, background:'rgba(255,255,255,.15)', display:'grid', placeItems:'center', fontSize:26, margin:'0 auto'}}>📝</div>
-                <div style={{fontSize:11, fontWeight:700, color:'#9EC9F0', letterSpacing:'.12em', textTransform:'uppercase', marginTop:16}}>Assessment</div>
-                <div style={{fontSize:22, fontWeight:800, color:'#fff', marginTop:6, letterSpacing:'-.02em', lineHeight:1.2}}>{course.title}</div>
-                <div style={{fontSize:13, color:'#C8DDF4', marginTop:8, lineHeight:1.5}}>
+          <div style={{maxWidth:560, margin:'24px auto 0'}}>
+            <Card pad={0} style={{overflow:'hidden', border:'1px solid #E2EAF3', boxShadow:'0 6px 24px rgba(0,42,75,.07)'}}>
+              <div style={{padding:'26px 30px 22px', background:'linear-gradient(135deg,#0A1F3D,#0072FF)', color:'#fff', textAlign:'center', position:'relative', overflow:'hidden'}}>
+                <div style={{position:'absolute', top:-40, right:-40, width:160, height:160, borderRadius:999, background:'rgba(255,255,255,.07)', pointerEvents:'none'}}/>
+                <div style={{width:48, height:48, borderRadius:14, background:'rgba(255,255,255,.15)', display:'grid', placeItems:'center', fontSize:22, margin:'0 auto'}}>📝</div>
+                <div style={{fontSize:10, fontWeight:700, color:'#9EC9F0', letterSpacing:'.12em', textTransform:'uppercase', marginTop:12}}>Assessment</div>
+                <div style={{fontSize:19, fontWeight:800, color:'#fff', marginTop:4, letterSpacing:'-.02em', lineHeight:1.25}}>{course.title}</div>
+                <div style={{fontSize:12, color:'#C8DDF4', marginTop:6, lineHeight:1.5}}>
                   {stepQuizDone
                     ? 'You\'ve already passed this assessment.'
                     : 'Every answer must be correct (100%) to pass.'}
                 </div>
               </div>
-              <div style={{padding:'24px 36px 28px', display:'flex', flexDirection:'column', gap:18}}>
+              <div style={{padding:'18px 28px 22px', display:'flex', flexDirection:'column', gap:16}}>
                 {!stepQuizDone && (
                   // Instructions (folded in from the old intro popup).
-                  <ul style={{margin:0, padding:0, listStyle:'none', display:'flex', flexDirection:'column', gap:9, fontSize:13, color:'#3B4A5E', textAlign:'left'}}>
-                    {['Answer every question — 100% correct is required to pass.',
+                  <ul style={{margin:0, padding:0, listStyle:'none', display:'flex', flexDirection:'column', gap:8, fontSize:12.5, color:'#3B4A5E', textAlign:'left'}}>
+                    {['100% correct is required to pass.',
                       'Got some wrong? Re-attempt only those — you won’t restart the whole assessment.',
-                      'You can flag questions and move between them freely.'].map(s => (
-                      <li key={s} style={{display:'flex', gap:10}}><span style={{color:'#17A674', flexShrink:0}}>✓</span><span>{s}</span></li>
+                      'Flag questions and move between them freely.'].map(s => (
+                      <li key={s} style={{display:'flex', gap:9}}><span style={{color:'#17A674', flexShrink:0}}>✓</span><span>{s}</span></li>
                     ))}
                   </ul>
                 )}
@@ -448,7 +448,7 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
                       <span>✓</span> Assessment passed
                     </div>
                   ) : (
-                    <Btn size="lg" onClick={goToQuiz}>Start Quiz →</Btn>
+                    <button className="quiz-action-btn quiz-action-primary" style={{width:'100%', justifyContent:'center', fontSize:15, padding:'14px 22px'}} onClick={goToQuiz}>Start Quiz →</button>
                   )}
                 </div>
               </div>
