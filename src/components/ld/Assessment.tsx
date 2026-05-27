@@ -313,7 +313,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
       {/* First-attempt only: explain the clarity/confidence signals. */}
       {isFirstAttempt && (
         <div style={{marginBottom:20, padding:'14px 18px', background:'#F2F9FF', border:'1px solid #CCEAFF', borderRadius:12, fontSize:13, color:'#0A1F3D', lineHeight:1.55}}>
-          If a question isn't clear, tick <b>"This question wasn't clear to me."</b> If you don't know the concept, tick <b>"I'm not confident about this concept"</b> instead of guessing — this helps us identify where to strengthen training. These don't affect your score.
+          If a question isn't clear, tick <b>"This question wasn't clear to me."</b> If you don't know the concept, tick <b>"I'm not confident about this concept"</b> instead of guessing — this helps us identify where to strengthen training.
         </div>
       )}
 
