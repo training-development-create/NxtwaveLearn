@@ -271,7 +271,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
           <div style={{padding:'24px 30px', background:'linear-gradient(135deg,#0A1F3D,#0072FF)', color:'#fff'}}>
             <div style={{fontSize:11, fontWeight:700, letterSpacing:'.12em', color:'#9EC9F0', textTransform:'uppercase'}}>One quick step</div>
             <div style={{fontSize:20, fontWeight:800, marginTop:4}}>How was this assessment?</div>
-            <div style={{fontSize:12.5, color:'#C8DDF4', marginTop:6, lineHeight:1.5}}>Optional — your feedback helps us improve the training. We only ask once.</div>
+            <div style={{fontSize:12.5, color:'#C8DDF4', marginTop:6, lineHeight:1.5}}>Your feedback helps us improve the training.</div>
           </div>
           <div style={{padding:'24px 30px 26px', display:'flex', flexDirection:'column', gap:22}}>
             <div>
@@ -313,7 +313,7 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
       {/* First-attempt only: explain the clarity/confidence signals. */}
       {isFirstAttempt && (
         <div style={{marginBottom:20, padding:'14px 18px', background:'#F2F9FF', border:'1px solid #CCEAFF', borderRadius:12, fontSize:13, color:'#0A1F3D', lineHeight:1.55}}>
-          If a question isn't clear, tick <b>"This question wasn't clear to me."</b> If you don't know the concept, tick <b>"I'm not confident about this concept"</b> instead of guessing — this helps us identify where to strengthen training.
+          The two boxes below are optional — tick one only if the question wasn't clear or if you don't know the concept. This helps us improve the training.
         </div>
       )}
 
