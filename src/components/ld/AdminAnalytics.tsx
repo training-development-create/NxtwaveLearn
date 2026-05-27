@@ -761,17 +761,21 @@ export function AdminAnalytics() {
 
       // Column layout (per admin request):
       //   1. identity + attempt info
-      //   2. ANSWERS — one pair per question: "<full question>" + "<full question> — Result"
-      //   3. FLAGS   — a SEPARATE section, one column per question, naming the
-      //               flag(s) raised ("Unclear" / "Not Confident") rather than TRUE/FALSE
-      //   4. overall feedback
+      //   2. per question, THREE adjacent columns:
+      //        "<full question>"  → the answer the learner chose
+      //        "Result"           → Correct / Incorrect
+      //        "Flag"             → the flag(s) raised ("Unclear" / "Not Confident"),
+      //                              blank if none — one flag column per question,
+      //                              sitting right next to that question
+      //   3. overall feedback
+      // The full question text appears once (as the answer-column header); the
+      // adjacent Result/Flag headers stay short so the sheet doesn't balloon.
       const header = [
         'Course','Employee Name','Employee Email','Employee ID','Department','Sub-Department',
         'Manager Name','Manager Email','Manager Contact',
         'Attempt Number','Score','Percentage','Result','Submitted Date',
       ];
-      questions.forEach(q => header.push(q.text, `${q.text} — Result`));
-      questions.forEach(q => header.push(`${q.text} — Flag`));
+      questions.forEach(q => header.push(q.text, 'Result', 'Flag'));
       header.push('Overall Rating','Overall Feedback','Feedback Submitted');
       const lines: string[] = [header.map(csvEscape).join(',')];
 
@@ -780,17 +784,16 @@ export function AdminAnalytics() {
         const pct = a.total ? Math.round((a.score / a.total) * 100) : 0;
         const respMap = byAttempt.get(a.id) || new Map<number, Resp>();
         const when = a.submitted_at || a.created_at;
-        const answerCols: unknown[] = [];
-        const flagCols: unknown[] = [];
+        const qCols: unknown[] = [];
         questions.forEach((q, i) => {
           const r = respMap.get(i);
           const ai = r?.selected_answer;
           const ans = (ai != null && q.options[ai] != null) ? String(q.options[ai]) : (ai != null ? String(ai) : '');
-          answerCols.push(ans, r ? (r.is_correct ? 'Correct' : 'Incorrect') : '');
           const flags: string[] = [];
           if (r?.unclear_question_flag) flags.push('Unclear');
           if (r?.not_confident_flag) flags.push('Not Confident');
-          flagCols.push(flags.join(', '));
+          // answer, result, flag — kept together, right next to the question
+          qCols.push(ans, r ? (r.is_correct ? 'Correct' : 'Incorrect') : '', flags.join(', '));
         });
         const row: unknown[] = [
           courseTitle,
@@ -798,7 +801,7 @@ export function AdminAnalytics() {
           e?.managerName || '', e?.managerEmail || '', e?.managerContact || '',
           a.attempt_number ?? '', `${a.score}/${a.total}`, `${pct}%`, a.passed ? 'Passed' : 'Failed',
           when ? new Date(when).toLocaleString() : '',
-          ...answerCols, ...flagCols,
+          ...qCols,
           a.overall_rating ?? '', a.overall_feedback ?? '', a.feedback_submitted ? 'Yes' : 'No',
         ];
         lines.push(row.map(csvEscape).join(','));
