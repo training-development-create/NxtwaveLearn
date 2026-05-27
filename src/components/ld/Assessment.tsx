@@ -374,18 +374,25 @@ export function Assessment({ onNav, state, setState }: { onNav: Nav; state: AppS
                 Hidden for the consent question (single option). */}
             {isFirstAttempt && q.options.length > 1 && (() => {
               const sig = signals[originalIdx] || { unclear: false, notConfident: false };
-              const toggle = (key: 'unclear' | 'notConfident') =>
-                setSignals(prev => ({ ...prev, [originalIdx]: { ...sig, [key]: !sig[key] } }));
+              // Mutually exclusive — a question is either unclear OR the concept
+              // isn't understood, never both. Selecting one clears the other;
+              // clicking the active option again clears it.
+              const choose = (key: 'unclear' | 'notConfident') =>
+                setSignals(prev => {
+                  const cur = prev[originalIdx] || { unclear: false, notConfident: false };
+                  const on = !cur[key];
+                  return { ...prev, [originalIdx]: { unclear: key === 'unclear' && on, notConfident: key === 'notConfident' && on } };
+                });
               const Box = ({ checked, label, onClick }: { checked: boolean; label: string; onClick: () => void }) => (
                 <button onClick={onClick} style={{display:'flex', gap:9, alignItems:'center', padding:'8px 12px', background: checked?'#FFF8EA':'#F7F9FC', border:`1px solid ${checked?'#FCD79B':'#EEF2F7'}`, borderRadius:8, cursor:'pointer', fontSize:12.5, color: checked?'#9A6708':'#5B6A7D', fontWeight:600}}>
-                  <span style={{width:16, height:16, borderRadius:4, border:`2px solid ${checked?'#E08A1E':'#CBD5E1'}`, background: checked?'#E08A1E':'#fff', color:'#fff', display:'grid', placeItems:'center', fontSize:11, flexShrink:0}}>{checked ? '✓' : ''}</span>
+                  <span style={{width:16, height:16, borderRadius:'50%', border:`2px solid ${checked?'#E08A1E':'#CBD5E1'}`, background:'#fff', display:'grid', placeItems:'center', flexShrink:0}}>{checked && <span style={{width:8, height:8, borderRadius:'50%', background:'#E08A1E'}}/>}</span>
                   {label}
                 </button>
               );
               return (
                 <div style={{display:'flex', gap:10, marginTop:16, flexWrap:'wrap'}}>
-                  <Box checked={sig.unclear} label="This question wasn't clear to me" onClick={() => toggle('unclear')} />
-                  <Box checked={sig.notConfident} label="I'm not confident about this concept" onClick={() => toggle('notConfident')} />
+                  <Box checked={sig.unclear} label="This question wasn't clear to me" onClick={() => choose('unclear')} />
+                  <Box checked={sig.notConfident} label="I'm not confident about this concept" onClick={() => choose('notConfident')} />
                 </div>
               );
             })()}

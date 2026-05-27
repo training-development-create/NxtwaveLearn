@@ -425,22 +425,32 @@ export function Player({ onNav, state, setState }: { onNav: Nav; state: AppState
                 <div style={{width:48, height:48, borderRadius:14, background:'rgba(255,255,255,.15)', display:'grid', placeItems:'center', fontSize:22, margin:'0 auto'}}>📝</div>
                 <div style={{fontSize:10, fontWeight:700, color:'#9EC9F0', letterSpacing:'.12em', textTransform:'uppercase', marginTop:12}}>Assessment</div>
                 <div style={{fontSize:19, fontWeight:800, color:'#fff', marginTop:4, letterSpacing:'-.02em', lineHeight:1.25}}>{course.title}</div>
-                <div style={{fontSize:12, color:'#C8DDF4', marginTop:6, lineHeight:1.5}}>
-                  {stepQuizDone
-                    ? 'You\'ve already passed this assessment.'
-                    : 'Every answer must be correct (100%) to pass.'}
-                </div>
+                {stepQuizDone && (
+                  <div style={{fontSize:12, color:'#C8DDF4', marginTop:6, lineHeight:1.5}}>
+                    You&apos;ve already passed this assessment.
+                  </div>
+                )}
               </div>
               <div style={{padding:'18px 28px 22px', display:'flex', flexDirection:'column', gap:16}}>
                 {!stepQuizDone && (
                   // Instructions (folded in from the old intro popup).
-                  <ul style={{margin:0, padding:0, listStyle:'none', display:'flex', flexDirection:'column', gap:8, fontSize:12.5, color:'#3B4A5E', textAlign:'left'}}>
-                    {['100% correct is required to pass.',
-                      'Got some wrong? Re-attempt only those — you won’t restart the whole assessment.',
-                      'Flag questions and move between them freely.'].map(s => (
-                      <li key={s} style={{display:'flex', gap:9}}><span style={{color:'#17A674', flexShrink:0}}>✓</span><span>{s}</span></li>
-                    ))}
-                  </ul>
+                  <>
+                    <p style={{margin:0, fontSize:13, color:'#3B4A5E', lineHeight:1.6, textAlign:'left'}}>
+                      This assessment confirms your understanding of the Sales Code of Conduct. Please complete it carefully — your responses are reviewed by the Sales Audit Team.
+                    </p>
+                    <div>
+                      <div style={{fontSize:11, fontWeight:800, color:'#0A1F3D', letterSpacing:'.04em', textTransform:'uppercase', marginBottom:10, textAlign:'left'}}>Before you start</div>
+                      <ul style={{margin:0, padding:0, listStyle:'none', display:'flex', flexDirection:'column', gap:9, fontSize:12.5, color:'#3B4A5E', textAlign:'left'}}>
+                        {['34 Yes/No questions',
+                          '100% correct is required to pass',
+                          'If you get any wrong, you’ll re-attempt only those questions — not the full assessment',
+                          'You can flag questions and move between them freely',
+                          'On your first attempt, a short optional feedback page appears before you submit'].map(s => (
+                          <li key={s} style={{display:'flex', gap:9}}><span style={{color:'#17A674', flexShrink:0}}>✓</span><span>{s}</span></li>
+                        ))}
+                      </ul>
+                    </div>
+                  </>
                 )}
                 <div style={{textAlign:'center'}}>
                   {stepQuizDone ? (
