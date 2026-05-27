@@ -726,11 +726,13 @@ export function AdminAnalytics() {
       // export uses, so the columns line up with the sheet admins already know.
       const idByUser = new Map<string, LearnerRow>(filtered.map(r => [r.id, r]));
 
-      // Questions define the per-question column set (positional, Q1…Qn).
+      // Questions define the per-question column set (positional, Q1…Qn). The
+      // full question text becomes the column header (admins asked for the real
+      // question, not "Q1"). Position prefix kept short for spreadsheet sanity.
       const { data: qRows } = await supabase.from('mcq_questions')
-        .select('id, options, position').eq('lesson_id', lessonId).order('position', { ascending: true });
-      const questions = ((qRows || []) as { id: string; options: unknown; position: number }[])
-        .map(q => ({ id: q.id, options: (q.options as string[]) || [] }));
+        .select('id, question, options, position').eq('lesson_id', lessonId).order('position', { ascending: true });
+      const questions = ((qRows || []) as { id: string; question: string; options: unknown; position: number }[])
+        .map((q, i) => ({ id: q.id, text: (q.question || `Question ${i + 1}`).trim(), options: (q.options as string[]) || [] }));
 
       // Attempts = rows (chronological).
       const { data: aRows } = await supabase.from('quiz_attempts')
@@ -757,12 +759,19 @@ export function AdminAnalytics() {
         });
       }
 
+      // Column layout (per admin request):
+      //   1. identity + attempt info
+      //   2. ANSWERS — one pair per question: "<full question>" + "<full question> — Result"
+      //   3. FLAGS   — a SEPARATE section, one column per question, naming the
+      //               flag(s) raised ("Unclear" / "Not Confident") rather than TRUE/FALSE
+      //   4. overall feedback
       const header = [
         'Course','Employee Name','Employee Email','Employee ID','Department','Sub-Department',
         'Manager Name','Manager Email','Manager Contact',
         'Attempt Number','Score','Percentage','Result','Submitted Date',
       ];
-      questions.forEach((_, i) => header.push(`Q${i+1} Answer`, `Q${i+1} Correct/Incorrect`, `Q${i+1} Unclear Flag`, `Q${i+1} Not Confident Flag`));
+      questions.forEach(q => header.push(q.text, `${q.text} — Result`));
+      questions.forEach(q => header.push(`${q.text} — Flag`));
       header.push('Overall Rating','Overall Feedback','Feedback Submitted');
       const lines: string[] = [header.map(csvEscape).join(',')];
 
@@ -771,20 +780,27 @@ export function AdminAnalytics() {
         const pct = a.total ? Math.round((a.score / a.total) * 100) : 0;
         const respMap = byAttempt.get(a.id) || new Map<number, Resp>();
         const when = a.submitted_at || a.created_at;
+        const answerCols: unknown[] = [];
+        const flagCols: unknown[] = [];
+        questions.forEach((q, i) => {
+          const r = respMap.get(i);
+          const ai = r?.selected_answer;
+          const ans = (ai != null && q.options[ai] != null) ? String(q.options[ai]) : (ai != null ? String(ai) : '');
+          answerCols.push(ans, r ? (r.is_correct ? 'Correct' : 'Incorrect') : '');
+          const flags: string[] = [];
+          if (r?.unclear_question_flag) flags.push('Unclear');
+          if (r?.not_confident_flag) flags.push('Not Confident');
+          flagCols.push(flags.join(', '));
+        });
         const row: unknown[] = [
           courseTitle,
           e?.name || '', e?.email || '', e?.empId || '', e?.department || '', e?.subDepartment || '',
           e?.managerName || '', e?.managerEmail || '', e?.managerContact || '',
           a.attempt_number ?? '', `${a.score}/${a.total}`, `${pct}%`, a.passed ? 'Passed' : 'Failed',
           when ? new Date(when).toLocaleString() : '',
+          ...answerCols, ...flagCols,
+          a.overall_rating ?? '', a.overall_feedback ?? '', a.feedback_submitted ? 'Yes' : 'No',
         ];
-        questions.forEach((q, i) => {
-          const r = respMap.get(i);
-          const ai = r?.selected_answer;
-          const ans = (ai != null && q.options[ai] != null) ? String(q.options[ai]) : (ai != null ? String(ai) : '');
-          row.push(ans, r ? (r.is_correct ? 'Correct' : 'Incorrect') : '', r?.unclear_question_flag ? 'TRUE' : 'FALSE', r?.not_confident_flag ? 'TRUE' : 'FALSE');
-        });
-        row.push(a.overall_rating ?? '', a.overall_feedback ?? '', a.feedback_submitted ? 'Yes' : 'No');
         lines.push(row.map(csvEscape).join(','));
       });
 
@@ -1553,97 +1569,117 @@ function StatusDonut({ data }: { data: { label: string; value: number; color: st
   );
 }
 
-// Per-question signal analytics for the selected assessment. Surfaces:
-//   • Ambiguous questions  — high "unclear question" flag rate
-//   • Concept gaps         — high "not confident" rate and/or high incorrect rate
-// Signals are collected on the FIRST attempt only (see migration), so the
-// unclear / not-confident counts here are first-attempt voices; the incorrect
-// rate spans every recorded response so it reflects real performance.
+// Per-question training-gap analytics for the selected assessment, RANKED so
+// the questions the most people get wrong (across all their attempts) sit at
+// the top — that's where training should focus. Updates live as learners
+// submit (Supabase realtime + a slow poll fallback). "Unclear" / "Not
+// confident" are first-attempt-only signals; "wrong" spans every attempt.
 function QuestionSignals({ lessonId }: { lessonId: string }) {
   type Row = {
     id: string; position: number; question: string;
-    total: number; firstTotal: number;
-    unclear: number; notConfident: number; incorrect: number;
+    total: number; incorrect: number; distinctWrong: number;
+    firstTotal: number; unclear: number; notConfident: number;
   };
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
+  const chNameRef = useRef<string>('');
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      setLoading(true);
-      try {
-        const { data: qData } = await supabase.from('mcq_questions')
-          .select('id, question, position').eq('lesson_id', lessonId).order('position', { ascending: true });
-        const questions = ((qData || []) as { id: string; question: string; position: number }[]);
-        if (!questions.length) { if (!cancelled) { setRows([]); setLoading(false); } return; }
-        const qids = questions.map(q => q.id);
+  const load = useCallback(async () => {
+    try {
+      const { data: qData } = await supabase.from('mcq_questions')
+        .select('id, question, position').eq('lesson_id', lessonId).order('position', { ascending: true });
+      const questions = ((qData || []) as { id: string; question: string; position: number }[]);
+      if (!questions.length) { setRows([]); setLoading(false); return; }
+      const qids = questions.map(q => q.id);
 
-        // Pull every response for these questions (paged). We also need to know
-        // which responses belong to a first attempt — fetch attempt flags once.
-        const responses: { question_id: string; attempt_id: string; is_correct: boolean | null; unclear_question_flag: boolean; not_confident_flag: boolean }[] = [];
-        const PAGE = 1000;
-        for (let from = 0; ; from += PAGE) {
-          const { data } = await supabase.from('quiz_question_responses')
-            .select('question_id, attempt_id, is_correct, unclear_question_flag, not_confident_flag')
-            .in('question_id', qids).range(from, from + PAGE - 1);
-          const batch = (data || []) as typeof responses;
-          responses.push(...batch);
-          if (batch.length < PAGE) break;
-        }
-
-        // First-attempt set (signals only meaningful for these).
-        const attemptIds = Array.from(new Set(responses.map(r => r.attempt_id)));
-        const firstAttempts = new Set<string>();
-        for (let i = 0; i < attemptIds.length; i += 200) {
-          const { data: aData } = await supabase.from('quiz_attempts')
-            .select('id, is_first_attempt').in('id', attemptIds.slice(i, i + 200));
-          (aData || []).forEach((a: { id: string; is_first_attempt: boolean }) => { if (a.is_first_attempt) firstAttempts.add(a.id); });
-        }
-
-        const agg = new Map<string, { total: number; firstTotal: number; unclear: number; notConfident: number; incorrect: number }>();
-        responses.forEach(r => {
-          const a = agg.get(r.question_id) || { total: 0, firstTotal: 0, unclear: 0, notConfident: 0, incorrect: 0 };
-          a.total += 1;
-          if (r.is_correct === false) a.incorrect += 1;
-          if (firstAttempts.has(r.attempt_id)) {
-            a.firstTotal += 1;
-            if (r.unclear_question_flag) a.unclear += 1;
-            if (r.not_confident_flag) a.notConfident += 1;
-          }
-          agg.set(r.question_id, a);
-        });
-
-        const out: Row[] = questions.map((q, i) => {
-          const a = agg.get(q.id) || { total: 0, firstTotal: 0, unclear: 0, notConfident: 0, incorrect: 0 };
-          return { id: q.id, position: q.position ?? i, question: q.question, ...a };
-        });
-        if (!cancelled) { setRows(out); setLoading(false); }
-      } catch (e) {
-        console.error('[QuestionSignals] load failed:', e);
-        if (!cancelled) { setRows([]); setLoading(false); }
+      // Every response for these questions (paged past Supabase's 1000-row cap).
+      // user_id lets us count DISTINCT learners who got each question wrong.
+      const responses: { question_id: string; attempt_id: string; user_id: string; is_correct: boolean | null; unclear_question_flag: boolean; not_confident_flag: boolean }[] = [];
+      const PAGE = 1000;
+      for (let from = 0; ; from += PAGE) {
+        const { data } = await supabase.from('quiz_question_responses')
+          .select('question_id, attempt_id, user_id, is_correct, unclear_question_flag, not_confident_flag')
+          .in('question_id', qids).range(from, from + PAGE - 1);
+        const batch = (data || []) as typeof responses;
+        responses.push(...batch);
+        if (batch.length < PAGE) break;
       }
-    })();
-    return () => { cancelled = true; };
+
+      // First-attempt set (clarity/confidence signals only count for these).
+      const attemptIds = Array.from(new Set(responses.map(r => r.attempt_id)));
+      const firstAttempts = new Set<string>();
+      for (let i = 0; i < attemptIds.length; i += 200) {
+        const { data: aData } = await supabase.from('quiz_attempts')
+          .select('id, is_first_attempt').in('id', attemptIds.slice(i, i + 200));
+        (aData || []).forEach((a: { id: string; is_first_attempt: boolean }) => { if (a.is_first_attempt) firstAttempts.add(a.id); });
+      }
+
+      const agg = new Map<string, { total: number; incorrect: number; wrongUsers: Set<string>; firstTotal: number; unclear: number; notConfident: number }>();
+      responses.forEach(r => {
+        const a = agg.get(r.question_id) || { total: 0, incorrect: 0, wrongUsers: new Set<string>(), firstTotal: 0, unclear: 0, notConfident: 0 };
+        a.total += 1;
+        if (r.is_correct === false) { a.incorrect += 1; if (r.user_id) a.wrongUsers.add(r.user_id); }
+        if (firstAttempts.has(r.attempt_id)) {
+          a.firstTotal += 1;
+          if (r.unclear_question_flag) a.unclear += 1;
+          if (r.not_confident_flag) a.notConfident += 1;
+        }
+        agg.set(r.question_id, a);
+      });
+
+      const out: Row[] = questions.map((q, i) => {
+        const a = agg.get(q.id);
+        return {
+          id: q.id, position: q.position ?? i, question: q.question,
+          total: a?.total ?? 0, incorrect: a?.incorrect ?? 0, distinctWrong: a?.wrongUsers.size ?? 0,
+          firstTotal: a?.firstTotal ?? 0, unclear: a?.unclear ?? 0, notConfident: a?.notConfident ?? 0,
+        };
+      });
+      setRows(out); setLoading(false);
+    } catch (e) {
+      console.error('[QuestionSignals] load failed:', e);
+      setRows([]); setLoading(false);
+    }
   }, [lessonId]);
 
+  useEffect(() => { setLoading(true); load(); }, [load]);
+
+  // Live updates: refresh whenever a new response/attempt lands. The responses
+  // table carries no lesson_id, so we listen broadly and re-query (admin-only,
+  // low volume); a slow poll backs it up if realtime isn't enabled on the table.
+  useEffect(() => {
+    chNameRef.current = `qsignals-${lessonId}-${Math.random().toString(36).slice(2)}`;
+    const ch = supabase
+      .channel(chNameRef.current)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'quiz_question_responses' }, () => load())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'quiz_attempts', filter: `lesson_id=eq.${lessonId}` }, () => load())
+      .subscribe();
+    const poll = setInterval(() => load(), 15000);
+    return () => { supabase.removeChannel(ch); clearInterval(poll); };
+  }, [lessonId, load]);
+
   const pct = (n: number, d: number) => (d ? Math.round((n / d) * 100) : 0);
-  // Concern score ranks the most problematic questions first.
+  // Training priority: total wrong answers (across ALL attempts) is the primary
+  // signal — it rewards both reach (more people) AND persistence (still wrong
+  // after retaking). Then distinct learners wrong, then incorrect rate.
   const ranked = useMemo(() => {
     return rows
-      .map((r, i) => ({
-        ...r, qno: i + 1,
+      .map(r => ({
+        ...r,
+        incorrectPct: pct(r.incorrect, r.total),
         unclearPct: pct(r.unclear, r.firstTotal),
         notConfPct: pct(r.notConfident, r.firstTotal),
-        incorrectPct: pct(r.incorrect, r.total),
       }))
       .sort((a, b) =>
-        (b.unclearPct + b.notConfPct + b.incorrectPct) - (a.unclearPct + a.notConfPct + a.incorrectPct)
-        || a.qno - b.qno);
+        b.incorrect - a.incorrect
+        || b.distinctWrong - a.distinctWrong
+        || b.incorrectPct - a.incorrectPct
+        || a.position - b.position);
   }, [rows]);
 
-  const ambiguous = ranked.filter(r => r.firstTotal >= 3 && r.unclearPct >= 25);
-  const conceptGaps = ranked.filter(r => r.total >= 3 && (r.incorrectPct >= 40 || r.notConfPct >= 30));
+  const hasData = ranked.some(r => r.total > 0);
+  const topGaps = ranked.filter(r => r.incorrect > 0).slice(0, 3);
+  const snippet = (s: string, n = 90) => { const t = (s || '').trim(); return t.length > n ? `${t.slice(0, n)}…` : t; };
 
   // Color a rate cell: muted under threshold, amber/red as it climbs.
   const rateCell = (value: number, denom: number, thresholds: [number, number]) => {
@@ -1657,10 +1693,10 @@ function QuestionSignals({ lessonId }: { lessonId: string }) {
   return (
     <Card>
       <div style={{padding:'18px 22px', borderBottom:'1px solid #EEF2F7'}}>
-        <div className="eyebrow">QUESTION SIGNALS · FIRST-ATTEMPT CLARITY &amp; CONFIDENCE</div>
-        <div style={{fontSize:16, fontWeight:800, color:'#002A4B', marginTop:2}}>Where learners struggle</div>
+        <div className="eyebrow">TRAINING PRIORITY · MOST-MISSED QUESTIONS</div>
+        <div style={{fontSize:16, fontWeight:800, color:'#002A4B', marginTop:2}}>Where learners need the most training</div>
         <div style={{fontSize:12, color:'#8A97A8', marginTop:4, lineHeight:1.5}}>
-          “Unclear” and “Not confident” are first-attempt signals. “Incorrect” spans every recorded response.
+          Ranked by how often each question is answered wrong across all attempts — the top of the list is where training should focus. Updates live as learners submit. “Unclear” / “Not confident” are first-attempt signals.
         </div>
       </div>
 
@@ -1668,28 +1704,21 @@ function QuestionSignals({ lessonId }: { lessonId: string }) {
         <div style={{padding:'28px 22px', color:'#8A97A8', fontSize:13}}>Loading question analytics…</div>
       ) : ranked.length === 0 ? (
         <div style={{padding:24}}><EmptyState icon="📝" title="No questions" sub="This assessment has no questions to analyse yet."/></div>
-      ) : ranked.every(r => r.total === 0) ? (
-        <div style={{padding:24}}><EmptyState icon="📊" title="No responses yet" sub="Per-question signals appear once learners start submitting attempts."/></div>
+      ) : !hasData ? (
+        <div style={{padding:24}}><EmptyState icon="📊" title="No responses yet" sub="Per-question analytics appear here live once learners start submitting attempts."/></div>
       ) : (
         <>
-          {(ambiguous.length > 0 || conceptGaps.length > 0) && (
-            <div style={{display:'flex', gap:12, flexWrap:'wrap', padding:'14px 22px', borderBottom:'1px solid #EEF2F7'}}>
-              {ambiguous.length > 0 && (
-                <div style={{flex:1, minWidth:240, padding:'12px 14px', background:'#FFF7ED', border:'1px solid #FCE3C4', borderRadius:10}}>
-                  <div style={{fontSize:11, fontWeight:800, color:'#B26A00', letterSpacing:'.06em'}}>⚠ POSSIBLY AMBIGUOUS</div>
-                  <div style={{fontSize:12, color:'#7A4A00', marginTop:4, lineHeight:1.5}}>
-                    {ambiguous.map(r => `Q${r.qno}`).join(', ')} — flagged “unclear” by ≥25% of first-time learners. Consider rewording.
+          {topGaps.length > 0 && (
+            <div style={{padding:'14px 22px', borderBottom:'1px solid #EEF2F7', background:'#FEF2F2'}}>
+              <div style={{fontSize:11, fontWeight:800, color:'#C2261D', letterSpacing:'.06em'}}>🎯 FOCUS TRAINING HERE</div>
+              <div style={{marginTop:8, display:'flex', flexDirection:'column', gap:6}}>
+                {topGaps.map((r, i) => (
+                  <div key={r.id} style={{fontSize:12, color:'#8A211A', lineHeight:1.5}}>
+                    <strong style={{color:'#C2261D'}}>#{i + 1}</strong> {snippet(r.question)}
+                    <span style={{color:'#B06A63'}}> — {r.distinctWrong} {r.distinctWrong === 1 ? 'learner' : 'learners'} wrong · {r.incorrect} wrong {r.incorrect === 1 ? 'answer' : 'answers'} ({r.incorrectPct}%)</span>
                   </div>
-                </div>
-              )}
-              {conceptGaps.length > 0 && (
-                <div style={{flex:1, minWidth:240, padding:'12px 14px', background:'#FEF2F2', border:'1px solid #F7CFCB', borderRadius:10}}>
-                  <div style={{fontSize:11, fontWeight:800, color:'#C2261D', letterSpacing:'.06em'}}>🎯 LIKELY CONCEPT GAPS</div>
-                  <div style={{fontSize:12, color:'#8A211A', marginTop:4, lineHeight:1.5}}>
-                    {conceptGaps.map(r => `Q${r.qno}`).join(', ')} — high incorrect or low confidence. Worth reinforcing in training.
-                  </div>
-                </div>
-              )}
+                ))}
+              </div>
             </div>
           )}
 
@@ -1697,33 +1726,30 @@ function QuestionSignals({ lessonId }: { lessonId: string }) {
             <table style={{width:'100%', borderCollapse:'collapse', fontSize:13}}>
               <thead>
                 <tr style={{background:'#F7F9FC', textAlign:'left'}}>
-                  <th style={{padding:'10px 14px 10px 22px', fontSize:10, fontWeight:800, color:'#8A97A8', letterSpacing:'.07em', whiteSpace:'nowrap'}}>Q</th>
+                  <th style={{padding:'10px 12px 10px 22px', fontSize:10, fontWeight:800, color:'#8A97A8', letterSpacing:'.07em', whiteSpace:'nowrap'}}>#</th>
                   <th style={{padding:'10px 14px', fontSize:10, fontWeight:800, color:'#8A97A8', letterSpacing:'.07em'}}>QUESTION</th>
-                  <th style={{padding:'10px 14px', fontSize:10, fontWeight:800, color:'#8A97A8', letterSpacing:'.07em', textAlign:'right', whiteSpace:'nowrap'}}>RESPONSES</th>
+                  <th style={{padding:'10px 14px', fontSize:10, fontWeight:800, color:'#8A97A8', letterSpacing:'.07em', textAlign:'right', whiteSpace:'nowrap'}}>LEARNERS WRONG</th>
+                  <th style={{padding:'10px 14px', fontSize:10, fontWeight:800, color:'#8A97A8', letterSpacing:'.07em', textAlign:'right', whiteSpace:'nowrap'}}>TIMES WRONG</th>
+                  <th style={{padding:'10px 14px', fontSize:10, fontWeight:800, color:'#8A97A8', letterSpacing:'.07em', textAlign:'right', whiteSpace:'nowrap'}}>INCORRECT %</th>
                   <th style={{padding:'10px 14px', fontSize:10, fontWeight:800, color:'#8A97A8', letterSpacing:'.07em', textAlign:'right', whiteSpace:'nowrap'}}>UNCLEAR</th>
-                  <th style={{padding:'10px 14px', fontSize:10, fontWeight:800, color:'#8A97A8', letterSpacing:'.07em', textAlign:'right', whiteSpace:'nowrap'}}>NOT CONFIDENT</th>
-                  <th style={{padding:'10px 22px 10px 14px', fontSize:10, fontWeight:800, color:'#8A97A8', letterSpacing:'.07em', textAlign:'right', whiteSpace:'nowrap'}}>INCORRECT</th>
+                  <th style={{padding:'10px 22px 10px 14px', fontSize:10, fontWeight:800, color:'#8A97A8', letterSpacing:'.07em', textAlign:'right', whiteSpace:'nowrap'}}>NOT CONFIDENT</th>
                 </tr>
               </thead>
               <tbody>
-                {ranked.map(r => (
-                  <tr key={r.id} style={{borderTop:'1px solid #EEF2F7'}}>
-                    <td style={{padding:'10px 14px 10px 22px', fontWeight:800, color:'#002A4B', whiteSpace:'nowrap'}}>Q{r.qno}</td>
-                    <td style={{padding:'10px 14px', color:'#3B4A5E', maxWidth:420}}>
-                      <div style={{display:'-webkit-box', WebkitLineClamp:2, WebkitBoxOrient:'vertical', overflow:'hidden'}}>{r.question}</div>
-                    </td>
-                    <td style={{padding:'10px 14px', textAlign:'right', color:'#5B6A7D', whiteSpace:'nowrap'}}>{r.total}</td>
-                    <td style={{padding:'10px 14px', textAlign:'right', whiteSpace:'nowrap'}}>
+                {ranked.map((r, i) => (
+                  <tr key={r.id} style={{borderTop:'1px solid #EEF2F7', background: i < 3 && r.incorrect > 0 ? '#FFF8F8' : undefined}}>
+                    <td style={{padding:'12px 12px 12px 22px', fontWeight:800, color: i < 3 && r.incorrect > 0 ? '#C2261D' : '#8A97A8', whiteSpace:'nowrap'}}>{i + 1}</td>
+                    <td style={{padding:'12px 14px', color:'#1F2D3D', maxWidth:520, lineHeight:1.45}}>{r.question}</td>
+                    <td style={{padding:'12px 14px', textAlign:'right', fontWeight:700, color:'#002A4B', whiteSpace:'nowrap'}}>{r.distinctWrong || <span style={{color:'#B6C0CC', fontWeight:400}}>0</span>}</td>
+                    <td style={{padding:'12px 14px', textAlign:'right', color:'#3B4A5E', whiteSpace:'nowrap'}}>{r.incorrect} <span style={{color:'#B6C0CC', fontSize:11}}>/ {r.total}</span></td>
+                    <td style={{padding:'12px 14px', textAlign:'right', whiteSpace:'nowrap'}}>{rateCell(r.incorrectPct, r.total, [40, 60])}</td>
+                    <td style={{padding:'12px 14px', textAlign:'right', whiteSpace:'nowrap'}}>
                       {rateCell(r.unclearPct, r.firstTotal, [25, 50])}
                       {r.firstTotal > 0 && <span style={{color:'#B6C0CC', fontSize:11, marginLeft:4}}>({r.unclear})</span>}
                     </td>
-                    <td style={{padding:'10px 14px', textAlign:'right', whiteSpace:'nowrap'}}>
+                    <td style={{padding:'12px 22px 12px 14px', textAlign:'right', whiteSpace:'nowrap'}}>
                       {rateCell(r.notConfPct, r.firstTotal, [30, 50])}
                       {r.firstTotal > 0 && <span style={{color:'#B6C0CC', fontSize:11, marginLeft:4}}>({r.notConfident})</span>}
-                    </td>
-                    <td style={{padding:'10px 22px 10px 14px', textAlign:'right', whiteSpace:'nowrap'}}>
-                      {rateCell(r.incorrectPct, r.total, [40, 60])}
-                      {r.total > 0 && <span style={{color:'#B6C0CC', fontSize:11, marginLeft:4}}>({r.incorrect})</span>}
                     </td>
                   </tr>
                 ))}
